@@ -20,21 +20,28 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
   "http://localhost:3000",
+  "https://collab-desk-nine.vercel.app",
   process.env.CLIENT_URL,
 ].filter(Boolean);
 
+const corsOrigin = (origin, callback) => {
+  // Allow non-browser requests (e.g. server-to-server, curl) or origins in whitelist
+  if (!origin || allowedOrigins.includes(origin)) {
+    callback(null, true);
+  } else {
+    callback(new Error("Not allowed by CORS"));
+  }
+};
+
 const io = new Server(server, {
   cors: {
-    origin: (origin, callback) => {
-      // Allow seamless connection from local dev, EC2, or deployed client
-      callback(null, true);
-    },
+    origin: corsOrigin,
     credentials: true,
   },
 });
 app.set("io", io);
 
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(express.json());
 app.use(passport.initialize());
 app.use("/api/auth", authRoutes);
@@ -54,20 +61,23 @@ app.use(errorHandler);
 
 const jwt = require("jsonwebtoken");
 
-// Authenticate Socket.io handshake via JWT token
+// Strictly Authenticate Socket.io connection handshake via JWT token
 io.use((socket, next) => {
   const token =
     socket.handshake.auth?.token ||
     socket.handshake.headers?.authorization?.replace("Bearer ", "");
-  if (token) {
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      socket.user = decoded;
-    } catch {
-      // Token expired or invalid - log and allow guest read if applicable
-    }
+
+  if (!token) {
+    return next(new Error("Unauthorized: Missing auth token"));
   }
-  next();
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    socket.user = decoded;
+    next();
+  } catch (err) {
+    return next(new Error("Unauthorized: Invalid or expired auth token"));
+  }
 });
 
 io.on("connection", (socket) => {
@@ -123,7 +133,7 @@ if (process.env.NODE_ENV !== "test") {
     .catch((err) => console.log("MongoDB connection error:", err));
 
   server.listen(PORT, () => {
-    console.log(`Server ${PORT} pe chal raha hai`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
