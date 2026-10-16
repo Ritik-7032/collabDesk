@@ -46,9 +46,11 @@ CollabDesk enforces a two-tier socket security model:
 1. **JWT Handshake Authentication:**
    - Incoming socket connections are intercepted via an authentication middleware (`io.use`).
    - The token provided in `socket.handshake.auth.token` is cryptographically verified against `JWT_SECRET`. Unauthenticated connections are flagged, and user identity is attached to the socket instance (`socket.user`).
-2. **Workspace-Scoped Rooms with Database Authorization:**
-   - Clients join rooms isolated to `workspace:${workspaceId}`.
-   - When a client emits a `joinWorkspace` event, the server queries MongoDB (`Workspace.exists({ _id: workspaceId, members: socket.user.id })`) to verify that the requesting user is an authorized member before granting room membership.
+2. **Workspace-Scoped Rooms with Strict Fail-Closed Database Authorization:**
+   - Clients request to join rooms isolated to `workspace:${workspaceId}`.
+   - **Fail-Closed Validation:** The server rejects room joins immediately if `workspaceId` is missing/invalid, or if the socket is unauthenticated (`!socket.user?.id`).
+   - The server queries MongoDB (`Workspace.exists({ _id: workspaceId, members: socket.user.id })`). If the user is not a member, or if a database timeout/error occurs, the request fails closed and `socket.join()` is strictly withheld.
+   - **Revocation Consideration (Production Nuance):** While room join enforces strict entry-time authorization, dynamic revocation (e.g., calling `io.in(...).socketsLeave(...)` upon member removal via `DELETE /api/workspaces/:id/members/:mId`) represents the next architectural hardening step to evict existing active socket connections in real time.
 
 ---
 

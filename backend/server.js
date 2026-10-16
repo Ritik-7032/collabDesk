@@ -74,26 +74,34 @@ io.on("connection", (socket) => {
   console.log("Client connected:", socket.id, socket.user ? `(User: ${socket.user.id})` : "(Guest)");
 
   socket.on("joinWorkspace", async (workspaceId) => {
-    if (!workspaceId) return;
-
-    // Verify workspace membership for authenticated sockets
-    if (socket.user && socket.user.id) {
-      try {
-        const Workspace = require("./models/Workspace");
-        const isMember = await Workspace.exists({
-          _id: workspaceId,
-          members: socket.user.id,
-        });
-        if (!isMember) {
-          socket.emit("error", { message: "Unauthorized workspace access" });
-          return;
-        }
-      } catch (err) {
-        console.error("Workspace room auth check error:", err.message);
-      }
+    if (!workspaceId || !mongoose.isValidObjectId(workspaceId)) {
+      socket.emit("error", { message: "Invalid workspace ID" });
+      return;
     }
 
-    socket.join(`workspace:${workspaceId}`);
+    if (!socket.user?.id) {
+      socket.emit("error", { message: "Unauthenticated socket connection" });
+      return;
+    }
+
+    try {
+      const Workspace = require("./models/Workspace");
+      const isMember = await Workspace.exists({
+        _id: workspaceId,
+        members: socket.user.id,
+      });
+
+      if (!isMember) {
+        socket.emit("error", { message: "Unauthorized workspace access" });
+        return;
+      }
+
+      // Strictly fail-closed: socket.join executes ONLY on verified membership
+      socket.join(`workspace:${workspaceId}`);
+    } catch (err) {
+      console.error("Workspace room auth check error:", err.message);
+      socket.emit("error", { message: "Could not join workspace" });
+    }
   });
 
   socket.on("leaveWorkspace", (workspaceId) => {
