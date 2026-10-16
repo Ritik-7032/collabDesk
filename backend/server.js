@@ -73,10 +73,27 @@ io.use((socket, next) => {
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id, socket.user ? `(User: ${socket.user.id})` : "(Guest)");
 
-  socket.on("joinWorkspace", (workspaceId) => {
-    if (workspaceId) {
-      socket.join(`workspace:${workspaceId}`);
+  socket.on("joinWorkspace", async (workspaceId) => {
+    if (!workspaceId) return;
+
+    // Verify workspace membership for authenticated sockets
+    if (socket.user && socket.user.id) {
+      try {
+        const Workspace = require("./models/Workspace");
+        const isMember = await Workspace.exists({
+          _id: workspaceId,
+          members: socket.user.id,
+        });
+        if (!isMember) {
+          socket.emit("error", { message: "Unauthorized workspace access" });
+          return;
+        }
+      } catch (err) {
+        console.error("Workspace room auth check error:", err.message);
+      }
     }
+
+    socket.join(`workspace:${workspaceId}`);
   });
 
   socket.on("leaveWorkspace", (workspaceId) => {

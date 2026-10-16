@@ -107,13 +107,14 @@ describe("CollabDesk API & Integration Test Suite", () => {
     assert.strictEqual(listsRes.body.length, 3);
   });
 
-  test("7. AWS S3: Presigned URL generated without server buffering", async () => {
+  test("7. AWS S3: Presigned URL signature generation and Content-Type binding", async () => {
     const res = await request(app)
       .post("/api/upload/presign")
       .set("Authorization", `Bearer ${authToken}`)
       .send({
         fileName: "architecture-spec.pdf",
         fileType: "application/pdf",
+        fileSize: 1024 * 500, // 500KB
       });
 
     assert.strictEqual(res.status, 200);
@@ -122,7 +123,7 @@ describe("CollabDesk API & Integration Test Suite", () => {
     assert.ok(res.body.uploadUrl.includes("amazonaws.com"));
   });
 
-  test("8. AI: Gemini generates structured subtask checklist", async () => {
+  test("8. AI: Task breakdown endpoint returns valid checklist schema (with resilient fallback)", async () => {
     const res = await request(app)
       .post("/api/ai/generate-subtasks")
       .set("Authorization", `Bearer ${authToken}`)
