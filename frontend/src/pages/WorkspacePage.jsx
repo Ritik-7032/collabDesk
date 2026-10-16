@@ -89,6 +89,15 @@ export default function WorkspacePage() {
     socket.connect();
     socket.emit("joinWorkspace", workspaceId);
 
+    const onConnectError = (err) => {
+      console.warn("Socket connection error:", err.message);
+      if (err.message && err.message.toLowerCase().includes("unauthorized")) {
+        localStorage.removeItem("token");
+        navigate("/login");
+      }
+    };
+    socket.on("connect_error", onConnectError);
+
     const sameWorkspace = (entity) => entity.workspace === workspaceId;
 
     const onTaskUpdated = (task) => {
@@ -145,6 +154,7 @@ export default function WorkspacePage() {
       socket.off("listDeleted", onListDeleted);
       socket.off("listsReordered", onListsReordered);
       socket.off("workspaceUpdated", onWorkspaceUpdated);
+      socket.off("connect_error", onConnectError);
       socket.emit("leaveWorkspace", workspaceId);
       socket.disconnect();
     };

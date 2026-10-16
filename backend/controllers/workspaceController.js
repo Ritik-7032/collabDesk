@@ -147,8 +147,21 @@ const removeMember = async (req, res) => {
 
     const io = req.app.get("io");
     if (io) {
-      io.to(`workspace:${workspace._id}`).emit("workspaceUpdated", updatedWorkspace);
-      io.emit("workspaceUpdated", updatedWorkspace);
+      const roomName = `workspace:${workspace._id}`;
+      io.to(roomName).emit("workspaceUpdated", updatedWorkspace);
+
+      // Real-time socket eviction: remove member's active socket from the room
+      try {
+        const sockets = await io.in(roomName).fetchSockets();
+        for (const s of sockets) {
+          if (s.user?.id === req.params.memberId) {
+            s.leave(roomName);
+            s.emit("error", { message: "Access revoked: you were removed from this workspace" });
+          }
+        }
+      } catch (evictErr) {
+        console.error("Socket eviction error:", evictErr.message);
+      }
     }
 
     res.json({ message: "Member removed", members: updatedWorkspace.members });

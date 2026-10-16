@@ -190,7 +190,7 @@ npm run build
 
 ### 3. WebSocket Security: JWT Handshake & Database Room Authorization
 * **Tradeoff:** Unauthenticated socket connections allow eavesdropping, and naive `io.emit()` broadcasts leak internal task updates across different organizations.
-* **Solution:** CollabDesk enforces a two-layer barrier: incoming socket handshakes are verified via JWT authentication middleware (`io.use`). Before granting a socket access to a room channel (`workspace:${id}`), the server queries MongoDB to verify that the authenticated user is an active workspace member.
+* **Solution:** CollabDesk enforces a two-layer security barrier: incoming socket handshakes are strictly authenticated via JWT middleware (`io.use`), rejecting missing or invalid tokens at the handshake level. Furthermore, room access (`workspace:${id}`) verifies active MongoDB workspace membership before subscription, and member revocation dynamically evicts active sockets from the room.
 
 ### 4. Third-Party Resiliency: Slack Webhooks & Gemini AI Fallback
 * **Tradeoff:** External APIs (Slack, Google Gemini) are subject to transient network latency, rate limits, and outages. Blocking core database transactions on external API acknowledgments degrades latency and creates single points of failure.
