@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Task = require("../models/Task");
 const Workspace = require("../models/Workspace");
 const List = require("../models/List");
@@ -21,6 +22,12 @@ const createTask = async (req, res) => {
       return res.status(400).json({ message: "list is required" });
     }
 
+    // Verify target list belongs to this workspace
+    const listDoc = await List.findById(list);
+    if (!listDoc || listDoc.workspace.toString() !== String(workspace)) {
+      return res.status(400).json({ message: "Target list does not belong to this workspace" });
+    }
+
     const count = await Task.countDocuments({ list });
 
     const task = await Task.create({
@@ -39,7 +46,6 @@ const createTask = async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       io.to(`workspace:${task.workspace}`).emit("taskCreated", task);
-      io.emit("taskCreated", task);
     }
 
     // Asynchronously send Slack alert if configured
@@ -47,7 +53,6 @@ const createTask = async (req, res) => {
       try {
         const ws = await Workspace.findById(workspace);
         if (ws?.slackWebhookUrl) {
-          const listDoc = await List.findById(list);
           let assigneeName = null;
           if (assignedTo) {
             const assigneeUser = await User.findById(assignedTo);
@@ -97,6 +102,19 @@ const updateTask = async (req, res) => {
       checklist,
     } = req.body;
 
+    const oldTask = await Task.findById(req.params.id);
+    if (!oldTask) {
+      return res.status(404).json({ message: "Task not found" });
+    }
+
+    // Prevent cross-workspace list relocation
+    if (list && list.toString() !== oldTask.list.toString()) {
+      const targetList = await List.findById(list);
+      if (!targetList || targetList.workspace.toString() !== oldTask.workspace.toString()) {
+        return res.status(400).json({ message: "Target list does not belong to this workspace" });
+      }
+    }
+
     const update = {};
     if (status !== undefined) update.status = status;
     if (title !== undefined) update.title = title;
@@ -109,18 +127,12 @@ const updateTask = async (req, res) => {
     if (dueDate !== undefined) update.dueDate = dueDate;
     if (checklist !== undefined) update.checklist = checklist;
 
-    const oldTask = await Task.findById(req.params.id);
-    if (!oldTask) {
-      return res.status(404).json({ message: "Task not found" });
-    }
-
     const isListChanged = list && oldTask.list && list.toString() !== oldTask.list.toString();
     const task = await Task.findByIdAndUpdate(req.params.id, update, { new: true });
 
     const io = req.app.get("io");
     if (io) {
       io.to(`workspace:${task.workspace}`).emit("taskUpdated", task);
-      io.emit("taskUpdated", task);
     }
 
     // If list changed, send Slack notification
@@ -153,19 +165,42 @@ const updateTask = async (req, res) => {
 const reorderTasksBulk = async (req, res) => {
   try {
     const { updates } = req.body; // [{ _id, list, position }]
-    if (!Array.isArray(updates)) {
+    if (!Array.isArray(updates) || updates.length === 0) {
       return res.status(400).json({ message: "updates array is required" });
     }
 
-    await Promise.all(
-      updates.map((u) =>
-        Task.findByIdAndUpdate(u._id, { list: u.list, position: u.position })
-      )
-    );
+    const ids = updates.map((u) => u._id);
+    if (ids.some((id) => !mongoose.isValidObjectId(id))) {
+      return res.status(400).json({ message: "Invalid task ID in updates" });
+    }
+
+    const tasks = await Task.find({ _id: { $in: ids } }).select("workspace list");
+    if (tasks.length !== ids.length) {
+      return res.status(404).json({ message: "One or more tasks not found" });
+    }
+
+    const wsId = tasks[0].workspace.toString();
+    const isCrossWorkspace = tasks.some((t) => t.workspace.toString() !== wsId);
+    if (isCrossWorkspace) {
+      return res.status(400).json({ message: "Tasks must belong to the same workspace" });
+    }
+
+    const isMember = await Workspace.exists({ _id: wsId, members: req.user._id });
+    if (!isMember) {
+      return res.status(403).json({ message: "Forbidden: You are not a member of this workspace" });
+    }
+
+    const bulkOps = updates.map((u) => ({
+      updateOne: {
+        filter: { _id: u._id, workspace: wsId },
+        update: { $set: { list: u.list, position: u.position } },
+      },
+    }));
+    await Task.bulkWrite(bulkOps);
 
     const io = req.app.get("io");
     if (io) {
-      io.emit("tasksReordered", updates);
+      io.to(`workspace:${wsId}`).emit("tasksReordered", updates);
     }
 
     res.json({ message: "Tasks reordered" });
@@ -201,7 +236,6 @@ const addComment = async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       io.to(`workspace:${task.workspace}`).emit("taskUpdated", task);
-      io.emit("taskUpdated", task);
     }
 
     // Slack comment notification
@@ -238,7 +272,6 @@ const deleteTask = async (req, res) => {
           _id: task._id,
           workspace: task.workspace,
         });
-        io.emit("taskDeleted", { _id: task._id, workspace: task.workspace });
       }
     }
 

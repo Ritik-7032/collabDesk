@@ -104,7 +104,6 @@ const addMember = async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       io.to(`workspace:${workspace._id}`).emit("workspaceUpdated", updatedWorkspace);
-      io.emit("workspaceUpdated", updatedWorkspace);
     }
 
     res.status(200).json({

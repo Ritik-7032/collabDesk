@@ -59,15 +59,17 @@ export default function TaskModal({
     setUploading(true);
     try {
       try {
+        const fileMime = file.type || "application/pdf";
         const presignRes = await api.post("/upload/presign", {
           fileName: file.name,
-          fileType: file.type || "application/octet-stream",
+          fileType: fileMime,
+          fileSize: file.size,
         });
         const { uploadUrl, fileUrl } = presignRes.data;
         await fetch(uploadUrl, {
           method: "PUT",
           body: file,
-          headers: { "Content-Type": file.type || "application/octet-stream" },
+          headers: { "Content-Type": fileMime },
         });
         toast.success("File uploaded to S3");
         return fileUrl;

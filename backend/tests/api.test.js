@@ -162,4 +162,104 @@ describe("CollabDesk API & Integration Test Suite", () => {
     assert.strictEqual(loginRes.status, 200);
     assert.ok(loginRes.body.token);
   });
+
+  test("10. Multi-tenant Isolation: User B cannot access or modify User A's workspace", async () => {
+    // Register User B
+    const userBEmail = `userb_${Date.now()}@collabdesk.test`;
+    await request(app)
+      .post("/api/auth/signup")
+      .send({
+        name: "Intruder User B",
+        email: userBEmail,
+        password: testPassword,
+      });
+
+    const loginRes = await request(app)
+      .post("/api/auth/login")
+      .send({ email: userBEmail, password: testPassword });
+    const userBToken = loginRes.body.token;
+
+    // User B tries to read User A's lists
+    const readListsRes = await request(app)
+      .get(`/api/lists/workspace/${createdWorkspaceId}`)
+      .set("Authorization", `Bearer ${userBToken}`);
+    assert.strictEqual(readListsRes.status, 403);
+
+    // User B tries to inject a task into User A's workspace
+    const injectTaskRes = await request(app)
+      .post("/api/tasks")
+      .set("Authorization", `Bearer ${userBToken}`)
+      .send({
+        title: "Malicious Task Injection",
+        workspace: createdWorkspaceId,
+        list: new mongoose.Types.ObjectId(),
+      });
+    assert.strictEqual(injectTaskRes.status, 403);
+
+    // Cleanup User B
+    const User = require("../models/User");
+    await User.findOneAndDelete({ email: userBEmail });
+  });
+
+  test("11. S3 Presign Security: Rejects non-whitelisted MIME types and oversized files", async () => {
+    // Disallowed executable MIME type
+    const badMimeRes = await request(app)
+      .post("/api/upload/presign")
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        fileName: "malware.exe",
+        fileType: "application/x-msdownload",
+        fileSize: 1024,
+      });
+    assert.strictEqual(badMimeRes.status, 400);
+
+    // File exceeds 10MB limit
+    const oversizeRes = await request(app)
+      .post("/api/upload/presign")
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        fileName: "giant-archive.zip",
+        fileType: "application/zip",
+        fileSize: 20 * 1024 * 1024, // 20MB
+      });
+    assert.strictEqual(oversizeRes.status, 400);
+  });
+
+  test("12. Atomic Batch Reorder: Unauthorized user cannot reorder tasks", async () => {
+    // Create an unauthorized user
+    const userCEmail = `userc_${Date.now()}@collabdesk.test`;
+    await request(app)
+      .post("/api/auth/signup")
+      .send({
+        name: "Unauthorized User C",
+        email: userCEmail,
+        password: testPassword,
+      });
+
+    const loginRes = await request(app)
+      .post("/api/auth/login")
+      .send({ email: userCEmail, password: testPassword });
+    const userCToken = loginRes.body.token;
+
+    // Attempt unauthorized task reorder
+    const reorderRes = await request(app)
+      .put("/api/tasks/reorder/bulk")
+      .set("Authorization", `Bearer ${userCToken}`)
+      .send({
+        updates: [
+          {
+            _id: new mongoose.Types.ObjectId(),
+            list: new mongoose.Types.ObjectId(),
+            position: 0,
+          },
+        ],
+      });
+    // Task does not exist or user forbidden
+    assert.ok([403, 404].includes(reorderRes.status));
+
+    // Cleanup User C
+    const User = require("../models/User");
+    await User.findOneAndDelete({ email: userCEmail });
+  });
 });
+

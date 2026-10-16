@@ -21,40 +21,59 @@ CollabDesk handles real-time synchronization through a dual-transport strategy v
 
 ---
 
-## 2. Direct-to-Cloud Uploads: Presigned PUT vs. Presigned POST
+## 2. Direct-to-Cloud Uploads: Presigned PUT with Cryptographic Content-Length Binding
 
 ### Design Tradeoff
 Streaming file uploads directly through Node.js (`multer.memoryStorage`) buffers raw binary data in heap memory. In concurrent upload scenarios (e.g., 50 simultaneous 20MB attachments), Node.js server RAM surges by over 1GB, risking garbage collection pauses or Out-Of-Memory (OOM) crashes.
 
 ### Architectural Solution
-CollabDesk utilizes AWS S3 Presigned URLs:
-1. **Server Metadata Validation:** Before generating a signed URL, the `/api/upload/presign` endpoint verifies that the reported `fileSize <= 10MB` and validates the `fileType` against an allowed MIME whitelist (images, PDFs, text, zip).
-2. **Signature Locking:** The server computes an AWS S3 `PutObjectCommand` signature bound to the exact `ContentType`. The browser streams the binary payload directly to AWS S3.
-3. **Engineering Tradeoff (PUT vs. POST):**
-   - *Current Implementation (Presigned PUT):* Completely offloads raw binary streaming from the Node.js server while cryptographically enforcing the `ContentType` header. File size validation is enforced server-side against client-provided metadata.
-   - *Production Evolution (Presigned POST):* For hard byte-level size enforcement directly on AWS infrastructure without trusting client metadata, AWS S3 Presigned POST with a `content-length-range` policy condition is the next architectural step.
+CollabDesk utilizes AWS S3 Presigned URLs with three layers of security:
+1. **Strict MIME Whitelisting:** The `/api/upload/presign` endpoint verifies incoming `fileType` against an explicit whitelist of safe content types (images, PDFs, text, zip, json), immediately rejecting untrusted executables.
+2. **Strict Integer Bounds & Byte Size Validation:** File sizes must be positive integers not exceeding 10MB (`fileSize <= 10 * 1024 * 1024`).
+3. **Cryptographic ContentLength Signature Binding:** The server computes an AWS S3 `PutObjectCommand` presigned signature with `ContentLength` and `ContentType` bound directly into the AWS request signature. Any client attempt to upload a payload exceeding the declared byte count is cryptographically rejected by AWS S3 (`SignatureDoesNotMatch` or `403 Forbidden`).
+4. **User & Workspace Namespace Isolation:** Keys are organized under `uploads/${userId}/${timestamp}-${sanitizedFileName}` to prevent namespace collisions and unauthorized overwrites across tenants.
 
 ---
 
-## 3. WebSocket Security: JWT Handshake & Room Partitioning
+## 3. Real-Time Security: Fail-Closed Rooms, Dynamic Eviction & Zero-Leak Isolation
 
 ### Design Tradeoff
-In a multi-workspace platform, a naive `io.emit()` broadcast leaks internal task updates across different organizations. Furthermore, allowing unauthenticated connections or arbitrary room joins allows malicious users to eavesdrop on private workspace channels.
+In a multi-tenant workspace platform, a naive `io.emit()` broadcast leaks internal task mutations and member activity across unrelated organizations. Furthermore, allowing unauthenticated connections or non-members to join socket rooms creates severe data exposure vulnerabilities.
 
 ### Architectural Solution
-CollabDesk enforces a two-tier socket security model:
-1. **JWT Handshake Authentication:**
+CollabDesk enforces a four-tier real-time security model:
+1. **Strict JWT Handshake Verification:**
    - Incoming socket connections are intercepted via an authentication middleware (`io.use`).
-   - The token provided in `socket.handshake.auth.token` is cryptographically verified against `JWT_SECRET`. Unauthenticated connections are flagged, and user identity is attached to the socket instance (`socket.user`).
-2. **Workspace-Scoped Rooms with Strict Fail-Closed Database Authorization:**
-   - Clients request to join rooms isolated to `workspace:${workspaceId}`.
-   - **Fail-Closed Validation:** The server rejects room joins immediately if `workspaceId` is missing/invalid, or if the socket is unauthenticated (`!socket.user?.id`).
-   - The server queries MongoDB (`Workspace.exists({ _id: workspaceId, members: socket.user.id })`). If the user is not a member, or if a database timeout/error occurs, the request fails closed and `socket.join()` is strictly withheld.
-   - **Revocation Consideration (Production Nuance):** While room join enforces strict entry-time authorization, dynamic revocation (e.g., calling `io.in(...).socketsLeave(...)` upon member removal via `DELETE /api/workspaces/:id/members/:mId`) represents the next architectural hardening step to evict existing active socket connections in real time.
+   - The token provided in `socket.handshake.auth.token` is cryptographically verified against `JWT_SECRET`. Unauthenticated or expired tokens fail the handshake immediately.
+2. **Fail-Closed Database Room Authorization:**
+   - Clients request to join rooms strictly isolated to `workspace:${workspaceId}`.
+   - The server verifies valid MongoDB ObjectId formats, checks user authentication, and performs an atomic database existence query (`Workspace.exists({ _id: workspaceId, members: socket.user.id })`).
+   - If the user is not a verified member, or if a database timeout occurs, the request fails closed and `socket.join()` is strictly withheld.
+3. **Real-Time Dynamic Member Eviction:**
+   - When a member is removed via `DELETE /api/workspaces/:id/members/:mId`, the server uses `io.in(roomName).fetchSockets()` to locate the member's active socket connections.
+   - The server immediately evicts the socket (`s.leave(roomName)`) and emits an access revocation event, terminating real-time event reception without requiring a manual server restart.
+4. **Zero-Leak Room Scoping:**
+   - All controller mutations (task creation, updates, deletes, batch reorders, list actions) emit exclusively to `io.to("workspace:" + wsId)`. Global `io.emit()` broadcasts are completely eliminated from the codebase.
 
 ---
 
-## 4. Asynchronous Slack Webhooks: Fire-and-Forget Resiliency
+## 4. Multi-Tenant Authorization Middleware & Atomic Batch Reordering
+
+### Design Tradeoff
+Batch operations such as Kanban card and column reordering can be exploited via IDOR (Insecure Direct Object Reference) if an attacker injects task IDs belonging to another user's workspace or performs cross-workspace drag operations.
+
+### Architectural Solution
+1. **`workspaceAccess` Authorization Middleware:**
+   - Reusable Express middleware (`viaWorkspaceParam`, `viaBodyWorkspace`, `viaTaskId`, `viaListId`) verifies that the authenticated user (`req.user._id`) belongs to the target entity's workspace before reaching the controller.
+2. **Atomic Batch Reorder with MongoDB `bulkWrite`:**
+   - Batch reorder endpoints (`reorderTasksBulk`, `reorderLists`) query all target IDs simultaneously, assert that `tasks.length === ids.length`, verify that all items belong to a single workspace, and check user workspace membership.
+   - Reordering writes are dispatched in a single atomic `bulkWrite` operation, eliminating partial write anomalies and network roundtrip overhead.
+3. **Cross-Workspace Boundary Assertion:**
+   - When moving a task to a different list via `PUT /api/tasks/:id`, the controller validates that the destination `list.workspace` matches `task.workspace`, preventing cross-workspace task teleportation.
+
+---
+
+## 5. Asynchronous Slack Webhooks: Fire-and-Forget Resiliency
 
 ### Design Tradeoff
 Third-party notification APIs (such as Slack Webhooks) are subject to external network latency, rate limits, and service outages. Blocking the core Express API response until Slack acknowledges the webhook introduces external latency and creates a single point of failure for task creation.
@@ -67,7 +86,7 @@ Slack notifications are dispatched using an asynchronous **fire-and-forget** pat
 
 ---
 
-## 5. Optimistic UI Updates & Error Rollback
+## 6. Optimistic UI Updates & Error Rollback
 
 ### Design Tradeoff
 Awaiting full server round-trips before re-rendering Kanban drag-and-drop actions introduces visual latency and sluggishness, degrading perceived user experience.
@@ -79,7 +98,7 @@ Awaiting full server round-trips before re-rendering Kanban drag-and-drop action
 
 ---
 
-## 6. Payment Integrity: Server-Side HMAC-SHA256 Verification
+## 7. Payment Integrity: Server-Side HMAC-SHA256 Verification
 
 ### Design Tradeoff
 Client-side payment callbacks cannot be trusted, as users can intercept and spoof frontend payment success responses.
@@ -94,12 +113,15 @@ Client-side payment callbacks cannot be trusted, as users can intercept and spoo
 
 ---
 
-## 7. Automated Testing Strategy & Third-Party Isolation
+## 8. Automated Testing Strategy & Third-Party Isolation
 
 ### Design Tradeoff
 End-to-end integration tests that call live external cloud APIs (e.g., AWS S3, Google Gemini, Slack) lead to flaky CI test runs caused by quota limits, credential expiration, or transient network delays.
 
 ### Architectural Solution
-1. **Deterministic S3 Testing:** The S3 presigned URL test validates the cryptographic signature computation and endpoint schema generated by `@aws-sdk/s3-request-presigner` locally, requiring zero external AWS network roundtrips.
-2. **Resilient AI Subtask Testing:** The Gemini AI controller features an internal resilient decomposition fallback, guaranteeing valid structured JSON checklist schemas during automated test runs without depending on external Google API uptime.
-3. **Database Isolation:** Integration tests operate on dedicated test collections with automated teardown hooks (`after()`) ensuring zero persistent test artifact pollution.
+1. **Multi-Tenant Isolation Testing:** Verifies that uninvited users cannot read or inject tasks into another tenant's workspace (HTTP 403).
+2. **S3 Security & Presign Signature Testing:** Validates that non-whitelisted MIME types (e.g. executables) and files exceeding 10MB are rejected with HTTP 400.
+3. **Atomic Reorder Authorization Testing:** Verifies that unauthorized batch reorders are rejected.
+4. **Deterministic S3 Testing:** Validates the cryptographic signature computation and endpoint schema generated by `@aws-sdk/s3-request-presigner` locally, requiring zero external AWS network roundtrips.
+5. **Resilient AI Subtask Testing:** The Gemini AI controller features an internal resilient decomposition fallback, guaranteeing valid structured JSON checklist schemas during automated test runs without depending on external Google API uptime.
+6. **Database Isolation:** Integration tests operate on dedicated test collections with automated teardown hooks (`after()`) ensuring zero persistent test artifact pollution.
