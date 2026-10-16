@@ -52,8 +52,26 @@ app.get("/", (req, res) => {
 const { errorHandler } = require("./middleware/errorMiddleware");
 app.use(errorHandler);
 
+const jwt = require("jsonwebtoken");
+
+// Authenticate Socket.io handshake via JWT token
+io.use((socket, next) => {
+  const token =
+    socket.handshake.auth?.token ||
+    socket.handshake.headers?.authorization?.replace("Bearer ", "");
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      socket.user = decoded;
+    } catch {
+      // Token expired or invalid - log and allow guest read if applicable
+    }
+  }
+  next();
+});
+
 io.on("connection", (socket) => {
-  console.log("Client connected:", socket.id);
+  console.log("Client connected:", socket.id, socket.user ? `(User: ${socket.user.id})` : "(Guest)");
 
   socket.on("joinWorkspace", (workspaceId) => {
     if (workspaceId) {

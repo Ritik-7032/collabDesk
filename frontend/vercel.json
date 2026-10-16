@@ -5,6 +5,10 @@
       "destination": "http://13.203.210.175:5000/api/:path*"
     },
     {
+      "source": "/socket.io/:path*",
+      "destination": "http://13.203.210.175:5000/socket.io/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

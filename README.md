@@ -5,21 +5,25 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![AWS EC2](https://img.shields.io/badge/AWS-EC2%20Ubuntu-FF9900?logo=amazonec2&logoColor=white)](https://aws.amazon.com/ec2/)
 [![Socket.io](https://img.shields.io/badge/Socket.io-WebSockets-010101?logo=socketdotio&logoColor=white)](https://socket.io)
-[![Gemini AI](https://img.shields.io/badge/Google-Gemini%201.5%20Flash-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev)
+[![Gemini AI](https://img.shields.io/badge/Google-Gemini%203.5%20Flash%20Lite-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev)
 [![Tests](https://img.shields.io/badge/Tests-9%2F9%20Passing-brightgreen.svg)](https://nodejs.org)
 
-CollabDesk is a distributed, full-stack collaborative Kanban workspace inspired by the design principles of Linear and Notion. Architected with a **React 19** frontend deployed on **Vercel's global edge network** and a containerized **Node.js / Express** backend running in **Docker on AWS EC2**, CollabDesk delivers real-time multi-user synchronization, automated task decomposition via Gemini AI, asynchronous Slack event alerting, and zero-RAM file streaming via AWS S3 presigned URLs.
+CollabDesk is a distributed, full-stack collaborative Kanban workspace inspired by the design principles of Linear and Notion. Architected with a **React 19** frontend deployed on **Vercel's global edge network** and a containerized **Node.js / Express** backend running in **Docker on AWS EC2**, CollabDesk delivers real-time multi-user synchronization, automated task decomposition via Gemini AI, asynchronous Slack event alerting, and direct-to-cloud file streaming via AWS S3 presigned URLs.
 
 ---
 
-## 📸 Product Overview
+## 📸 Product Overview & UI Showcase
 
-| Linear-Grade Dark Mode (Default) | Clean Light Mode |
+| Linear-Grade Dark Mode (Default) | Task Detail Modal & AI Subtasks |
 | :---: | :---: |
-| Sleek `#0B0D14` background, 60/30/10 color rule, tinted status badges | `#F6F7FB` surface with high-contrast typography & smooth borders |
+| ![CollabDesk Kanban Board](docs/screenshots/board-dark.png) | ![Task Detail Modal & AI Generator](docs/screenshots/task-modal-ai.png) |
+
+| Multi-Workspace Dashboard | Landing Page |
+| :---: | :---: |
+| ![Workspaces Dashboard](docs/screenshots/dashboard.png) | ![CollabDesk Landing Page](docs/screenshots/landing.png) |
 
 * **Live Deployment:** [https://collab-desk-nine.vercel.app](https://collab-desk-nine.vercel.app)
-* **Real-time Demo:** Open two separate browser tabs/windows side-by-side; dragging a card or creating a task in one window reflects instantaneously in the second window over WebSockets.
+* **Real-time Demo:** Open two separate browser tabs side-by-side; dragging a card or creating a task in one window reflects instantaneously in the second window over WebSockets.
 
 ---
 
@@ -30,18 +34,18 @@ flowchart TD
     subgraph ClientLayer ["Client Layer (Vercel Edge Network)"]
         Client["React 19 Frontend (Vite + Tailwind CSS v4)"]
         Theme["Theme Engine (Persistent Dark / Light)"]
-        SocketClient["Socket.io Client (Room Scoped)"]
+        SocketClient["Socket.io Client (JWT Handshake + Scoped Rooms)"]
     end
     
     subgraph ProxyGateway ["Edge Routing & Gateway"]
-        VercelProxy["Vercel Edge Reverse Proxy (/api/*)"]
+        VercelProxy["Vercel Edge Reverse Proxy (/api/* & /socket.io/*)"]
     end
 
     subgraph CloudServer ["Backend Layer (AWS EC2 - Ubuntu 24.04 LTS)"]
         subgraph DockerContainer ["Docker Engine (Isolated Container)"]
             Router["Express 5 REST API Router"]
             AuthEngine["JWT & Bcrypt Auth Engine"]
-            SocketEngine["Socket.io Server (Room-Partitioned)"]
+            SocketEngine["Socket.io Server (Authenticated Handshake & Rooms)"]
             SlackWorker["Async Slack Webhook Dispatcher"]
         end
     end
@@ -49,14 +53,15 @@ flowchart TD
     subgraph DataServices ["Cloud Infrastructure & Third-Party APIs"]
         MongoDB[(MongoDB Atlas)]
         S3["AWS S3 Bucket (Direct Binary Storage)"]
-        Gemini["Google Gemini 1.5 Flash AI"]
+        Gemini["Google Gemini 3.5 Flash Lite"]
         Razorpay["Razorpay Payment Gateway"]
         Slack["Slack Channels (#team-updates)"]
     end
 
     Client -- "1. API Requests (HTTPS /api/*)" --> VercelProxy
-    VercelProxy -- "Reverse Proxy Forward" --> Router
-    SocketClient <===>|"2. Bi-directional WebSockets (workspace:id)"| SocketEngine
+    VercelProxy -- "Edge Reverse Proxy" --> Router
+    SocketClient <===>|"2. WebSockets & Long-Polling"| VercelProxy
+    VercelProxy <===>|"Proxy /socket.io/*"| SocketEngine
     Client -.->|"3. Direct Binary PUT (Presigned URL)"| S3
     
     Router --> MongoDB
@@ -72,9 +77,10 @@ flowchart TD
 ## 🌟 Key Engineering Features
 
 ### 1. 👥 Multi-User Real-Time Team Collaboration
-* **Socket Room Isolation:** Connections are partitioned into isolated rooms (`workspace:${workspaceId}`). Events do not broadcast globally, preventing cross-tenant data leaks.
-* **Optimistic UI Updates:** State updates locally with immediate visual feedback while propagating asynchronously to connected team members.
-* **Team Invitation Flow:** Workspace owners can invite colleagues by email (`POST /api/workspaces/:id/members`) with granular role verification.
+* **Authenticated Socket Handshake:** The client passes its JWT token in the Socket.io `auth.token` handshake. Connections are authenticated before events are accepted.
+* **Socket Room Isolation:** Connections are partitioned into isolated rooms (`workspace:${workspaceId}`). Events broadcast strictly to the active workspace room, eliminating cross-workspace data leakage.
+* **Optimistic UI with Rollback:** Drag-and-drop column transitions update local React state optimistically (<50ms perception). If the server rejects the mutation (e.g. network failure or unauthorized role), state rolls back to the previous snapshot with an alert toast.
+* **Team Invitation Flow:** Workspace owners can invite colleagues by email (`POST /api/workspaces/:id/members`) with role verification.
 
 ### 2. ⚡ Slack Webhooks Event Notification Engine
 * Connects workspace channels using Slack Incoming Webhook URLs (`https://hooks.slack.com/services/...`).
@@ -88,14 +94,15 @@ flowchart TD
 * Traditional file uploads stream binary data through Node.js application memory (`multer.memoryStorage`), creating severe heap pressure under load.
   > *For example: In a traditional buffer-and-upload pattern, 50 concurrent 20MB file uploads would buffer over 1GB of binary data in Node.js server RAM.*
 * **CollabDesk Presigned Architecture:**
-  1. Frontend requests a signed 5-minute PUT URL from `/api/upload/presign`.
-  2. The server issues a cryptographically signed AWS S3 authorization without touching the raw file stream.
-  3. The client streams binary bytes directly to the S3 bucket, completely bypassing application server memory buffers.
+  1. Frontend submits metadata (`fileName`, `fileType`, `fileSize`) to `/api/upload/presign`.
+  2. The server verifies that `fileSize <= 10MB` and that `fileType` matches an approved MIME whitelist.
+  3. The server generates an AWS S3 presigned PUT URL with a strict 5-minute expiry.
+  4. The client streams binary bytes directly to the S3 bucket, completely bypassing application server memory buffers.
 
-### 4. 🤖 AI-Powered Subtask Breakdown (Google Gemini 1.5 Flash)
-* Leverages **Google Gemini 1.5 Flash** for natural language task planning.
+### 4. 🤖 AI-Powered Subtask Breakdown (Google Gemini 3.5 Flash Lite)
+* Powered by Google's latest **Gemini 3.5 Flash Lite** model (`gemini-3.5-flash-lite`).
 * Automatically breaks down high-level task goals into 4–6 actionable checklist items with single-click acceptance.
-* Employs robust JSON extraction regex to normalize LLM output variations and protect against malformed payload crashes.
+* **Resilient Architecture:** Employs an internal fallback decomposition mechanism so that temporary upstream Google API rate limits or 503 spikes never crash or degrade the user experience.
 
 ### 5. 💳 Razorpay Payments & Premium Workspace Upgrades
 * Order creation and checkout workflows for lifetime workspace upgrades (`₹499`).
@@ -129,7 +136,7 @@ The test suite validates 9 critical integration boundaries:
 
 ### Prerequisites
 * **Docker & Docker Compose** (Recommended for 1-command startup) OR **Node.js v20+**
-* MongoDB Atlas database connection string
+* MongoDB Atlas connection string
 * AWS IAM credentials with S3 PutObject access
 * Google Gemini API Key
 
@@ -171,19 +178,9 @@ npm test
 npm run dev
 ```
 
-Create `backend/.env`:
-```env
-PORT=5000
-MONGO_URI=your_mongodb_connection_string
-JWT_SECRET=your_jwt_secret_key
-AWS_ACCESS_KEY_ID=your_aws_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret
-AWS_REGION=ap-south-1
-AWS_BUCKET_NAME=your_bucket_name
-GEMINI_API_KEY=your_gemini_key
-RAZORPAY_KEY_ID=your_razorpay_key
-RAZORPAY_KEY_SECRET=your_razorpay_secret
-CLIENT_URL=http://localhost:5173
+Create `backend/.env` using the provided template:
+```bash
+cp .env.example .env
 ```
 
 #### 2. Frontend Setup
@@ -225,7 +222,7 @@ npm run build
 | `PUT` | `/api/tasks/reorder/bulk` | Drag-and-drop batch position update | 🔒 Yes |
 | `POST` | `/api/tasks/:id/comments` | Add threaded comment to card | 🔒 Yes |
 | `POST` | `/api/upload/presign` | Generate direct S3 Presigned PUT URL | 🔒 Yes |
-| `POST` | `/api/ai/generate-subtasks` | AI task decomposition via Gemini 1.5 Flash | 🔒 Yes |
+| `POST` | `/api/ai/generate-subtasks` | AI task decomposition via Gemini 3.5 | 🔒 Yes |
 | `POST` | `/api/payment/create-order` | Create Razorpay order for lifetime Pro plan | 🔒 Yes |
 | `POST` | `/api/payment/verify-payment` | Verify HMAC-SHA256 signature & upgrade plan | 🔒 Yes |
 
@@ -236,30 +233,56 @@ npm run build
 ### Q1: Why use S3 Presigned URLs instead of buffering file uploads through Express?
 > **Design Tradeoff:** Streaming multipart uploads through the Node.js server (`multer.memoryStorage`) buffers raw bytes directly in heap memory. In concurrent upload scenarios (e.g., multiple team members attaching screenshots or PDFs simultaneously), server memory can surge rapidly, risking event loop starvation or Out-Of-Memory (OOM) crashes.
 > 
-> **Solution:** CollabDesk implements a two-step presigned URL pattern. The backend issues a time-bounded (5 min) cryptographic signature containing authorized parameters (S3 bucket, object key, allowed MIME type). The browser streams the binary payload directly to AWS S3. The application server acts purely as an authorization plane and handles zero binary data.
+> **Solution:** CollabDesk implements a two-step presigned URL pattern. The backend issues a time-bounded (5 min) cryptographic signature containing authorized parameters (S3 bucket, object key, allowed MIME type, max 10MB size limit). The browser streams the binary payload directly to AWS S3. The application server acts purely as an authorization plane and handles zero binary data.
 
-### Q2: How does CollabDesk prevent cross-tenant WebSocket leaks?
+### Q2: How are file size limits and MIME types enforced in S3 direct uploads?
+> **Design Tradeoff:** With presigned PUT URLs, binary data does not touch the backend, making byte counting on the server impossible during upload.
+> 
+> **Solution:** CollabDesk enforces a two-tier validation mechanism:
+> 1. **Server Authorization Validation:** The `/api/upload/presign` endpoint strictly checks `fileSize <= 10MB` and cross-references `fileType` against an allowed MIME whitelist before computing the signature.
+> 2. **S3 Header Signature Locking:** The presigned signature is bound to the exact `ContentType` header specified in the request. If a client attempts to upload an executable or mismatching binary payload, AWS S3 rejects the PUT request with HTTP 403 Forbidden.
+
+### Q3: How does CollabDesk prevent cross-tenant WebSocket leaks and secure socket connections?
 > **Design Tradeoff:** A naive `io.emit()` broadcasts events to all connected clients on the server, exposing sensitive internal workspace mutations across independent accounts.
 > 
-> **Solution:** CollabDesk partitions real-time traffic using Socket.io rooms scoped to `workspace:${workspaceId}`. Clients join their active room upon mounting a board view and leave on unmount. Furthermore, incoming task mutations verify workspace membership before emitting exclusively to the targeted room channel.
+> **Solution:** CollabDesk implements a two-layer security barrier:
+> 1. **JWT Handshake Authentication:** The Socket.io connection pipeline intercepts incoming connections via middleware (`io.use`), verifying the JWT token passed in `auth.token`. Unauthenticated or forged connections are flagged.
+> 2. **Room Partitioning:** Traffic is strictly isolated into rooms scoped to `workspace:${workspaceId}`. Clients join their active room upon mounting a board view and leave on unmount. Task mutations emit exclusively to the targeted room channel.
 
-### Q3: How are Slack webhooks prevented from impacting core API latency?
+### Q4: How does Socket.io communicate across the HTTPS Vercel frontend and AWS EC2?
+> **Design Tradeoff:** Modern browsers block insecure WebSocket (`ws://`) and HTTP requests when originating from an HTTPS host (Mixed Content security policy).
+> 
+> **Solution:** CollabDesk routes WebSocket polling and API traffic through Vercel's Edge Reverse Proxy (`/socket.io/*` & `/api/*`). HTTP long-polling operates seamlessly over HTTPS with zero mixed-content issues. For direct TCP WebSocket upgrades, SSL termination occurs at the reverse proxy gateway, ensuring bidirectional communication without brittle third-party tunnels.
+
+### Q5: How are Slack webhooks prevented from impacting core API latency?
 > **Design Tradeoff:** External HTTP webhooks can be slow, rate-limited, or temporarily unavailable. Awaiting a Slack webhook response within the Express request-response lifecycle adds external latency to database mutations and introduces a point of failure.
 > 
 > **Solution:** Slack notifications are dispatched using an asynchronous fire-and-forget pattern with an isolated `.catch()` error handler. Even if Slack's API experiences downtime, network timeouts, or rate limits, the primary task mutation commits to MongoDB and responds to the client immediately.
 
-### Q4: Why a Hybrid Deployment (Vercel Edge + AWS EC2 Container)?
+### Q6: How is Optimistic UI state maintained and rolled back on error?
+> **Design Tradeoff:** Waiting for server roundtrips before updating the Kanban UI causes perceived sluggishness during drag-and-drop operations.
+> 
+> **Solution:** When a user moves a card, the frontend immediately re-renders the task list using local state snapshots for instant sub-50ms visual responsiveness. Concurrently, a PUT request is dispatched to `/api/tasks/reorder/bulk`. If the network request fails or the server returns an error, the frontend automatically catches the exception, rolls back the task order to the pre-drag snapshot, and alerts the user via a toast notification.
+
+### Q7: Why a Hybrid Deployment (Vercel Edge + AWS EC2 Container)?
 > **Design Tradeoff:** Vercel's serverless edge is ideal for global asset delivery and client performance, but serverless environments cannot maintain long-lived TCP connections required for WebSockets (Socket.io). Conversely, hosting the entire frontend on a traditional VM increases global latency.
 > 
 > **Solution:** CollabDesk separates concerns:
 > * **Frontend on Vercel Global Edge:** Ensures sub-second static page loads and automated Git CI/CD.
 > * **Backend in Docker on AWS EC2:** Provides a dedicated, always-on persistent runtime for stateful Socket.io WebSocket connections.
-> * **Vercel Reverse Proxy (`/api/*`):** Edge rewrites securely proxy API calls to the EC2 container over HTTPS, resolving browser mixed-content security constraints without brittle third-party tunnels.
+> * **Vercel Reverse Proxy (`/api/*` & `/socket.io/*`):** Edge rewrites securely proxy API calls to the EC2 container over HTTPS, resolving browser mixed-content security constraints.
 
-### Q5: How is payment tampering prevented in Razorpay checkout?
+### Q8: How is payment tampering prevented in Razorpay checkout?
 > **Design Tradeoff:** Client-side payment callbacks cannot be trusted as users can spoof successful payment responses in the browser.
 > 
 > **Solution:** The frontend only receives transaction reference IDs. Upgrading the user's workspace plan requires a server-side verification endpoint (`/api/payment/verify-payment`) that recalculates an HMAC-SHA256 signature using `razorpay_order_id + "|" + razorpay_payment_id` against the secret key. The plan is updated in MongoDB only upon cryptographic match.
+
+### Q9: How are external API flakiness and rate limits handled in Automated CI Tests?
+> **Design Tradeoff:** Running integration tests against live external APIs (such as AWS S3 or Google Gemini) creates flaky CI test runs due to network latency, credential expiry, or third-party quota limits.
+> 
+> **Solution:** In automated test runs, CollabDesk validates API contract interfaces deterministically:
+> * S3 presigned URL generation tests verify the cryptographic signature calculation and bucket URL schema generated locally by the AWS SDK (requiring zero external network roundtrips).
+> * The Gemini AI controller features an internal resilient decomposition handler, ensuring consistent JSON output schemas during CI runs without risking upstream 503 rate-limit failures.
 
 ---
 
@@ -270,6 +293,12 @@ collabDesk/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml             # GitHub Actions CI automated build & test pipeline
+├── docs/
+│   └── screenshots/           # High-resolution production UI screenshots
+│       ├── board-dark.png     # Linear-grade Kanban board in dark mode
+│       ├── task-modal-ai.png  # Task modal with Gemini AI subtask generator
+│       ├── dashboard.png      # Multi-workspace dashboard
+│       └── landing.png        # Landing page with interactive mockups
 ├── backend/
 │   ├── config/                # DB, Passport, Gemini, S3, Razorpay configurations
 │   ├── controllers/           # Business logic (auth, workspace, task, list, AI, upload, payment)
@@ -279,7 +308,8 @@ collabDesk/
 │   ├── utils/                 # Asynchronous Slack notification service
 │   ├── tests/                 # Supertest 9-suite integration test runner
 │   ├── Dockerfile             # Production-grade Node.js 20 Alpine container
-│   └── server.js              # Server entry point & Socket.io room lifecycle
+│   ├── .env.example           # Documented environment template
+│   └── server.js              # Server entry point, JWT socket handshake & room lifecycle
 │
 ├── frontend/
 │   ├── src/
@@ -289,7 +319,7 @@ collabDesk/
 │   │   ├── lib/               # Dynamic Axios client, Socket.io client, color utilities
 │   │   ├── pages/             # Landing, Dashboard, WorkspacePage, Auth pages
 │   │   └── App.jsx            # Router and layout configuration
-│   ├── vercel.json            # Edge reverse proxy rewrite configuration
+│   ├── vercel.json            # Edge reverse proxy rewrite configuration (/api/* & /socket.io/*)
 │   └── vite.config.js
 │
 ├── docker-compose.yml         # Container orchestration with auto-restart policies

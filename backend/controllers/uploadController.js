@@ -5,9 +5,15 @@ const s3 = require("../config/s3");
 // Production direct-to-S3 Presigned URL generation (Zero server RAM consumption)
 const generatePresignedUrl = async (req, res) => {
   try {
-    const { fileName, fileType } = req.body;
+    const { fileName, fileType, fileSize } = req.body;
     if (!fileName || !fileType) {
       return res.status(400).json({ message: "fileName and fileType are required" });
+    }
+
+    // Maximum 10MB file limit
+    const MAX_FILE_SIZE = 10 * 1024 * 1024;
+    if (fileSize && Number(fileSize) > MAX_FILE_SIZE) {
+      return res.status(400).json({ message: "File exceeds 10MB size limit" });
     }
 
     const sanitized = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
