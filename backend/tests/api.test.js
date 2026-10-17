@@ -188,7 +188,11 @@ describe("CollabDesk API & Integration Test Suite", () => {
       assert.ok(Array.isArray(fallbackRes.body.subtasks));
       assert.ok(fallbackRes.body.subtasks.length >= 2);
     } finally {
-      process.env.GEMINI_API_KEY = originalKey;
+      if (originalKey === undefined) {
+        delete process.env.GEMINI_API_KEY;
+      } else {
+        process.env.GEMINI_API_KEY = originalKey;
+      }
     }
   });
 
