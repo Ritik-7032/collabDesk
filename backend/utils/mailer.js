@@ -49,7 +49,11 @@ const sendPasswordResetEmail = async ({ to, resetUrl }) => {
   }
 
   // Graceful fallback for dev/test or when SMTP is not configured
-  console.log(`[AUTH DISPATCH] Password reset link generated for ${to}: ${resetUrl}`);
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[AUTH DISPATCH] Password reset link generated for ${to}: ${resetUrl}`);
+  } else {
+    console.log(`[AUTH MAILER] Password reset dispatch triggered for ${to} (SMTP credentials not configured)`);
+  }
   return { success: true, fallback: true };
 };
 

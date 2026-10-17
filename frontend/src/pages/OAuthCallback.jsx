@@ -6,7 +6,7 @@ import { Loader2 } from "lucide-react";
 
 export default function OAuthCallback() {
   const [params] = useSearchParams();
-  const { setUser, refreshUser } = useAuth();
+  const { refreshUser } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const ran = useRef(false);
@@ -15,17 +15,12 @@ export default function OAuthCallback() {
     if (ran.current) return;
     ran.current = true;
 
-    const token = params.get("token");
     const error = params.get("error");
 
     if (error) {
       toast.error("Google sign-in was canceled or failed");
       navigate("/login", { replace: true });
       return;
-    }
-
-    if (token) {
-      localStorage.setItem("token", token);
     }
 
     refreshUser().then((user) => {
@@ -36,7 +31,7 @@ export default function OAuthCallback() {
         navigate("/login", { replace: true });
       }
     });
-  }, [params, navigate, setUser, refreshUser, toast]);
+  }, [params, navigate, refreshUser, toast]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-bg text-text gap-3 font-sans">

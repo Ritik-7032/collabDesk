@@ -140,8 +140,10 @@ const forgotPassword = async (req, res) => {
     const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
     const resetUrl = `${clientUrl}/reset-password?token=${rawResetToken}`;
 
-    // Dispatch email via configured SMTP (or log fallback for staging/dev)
-    await sendPasswordResetEmail({ to: normalizedEmail, resetUrl });
+    // Dispatch email asynchronously (fire-and-forget defeats timing side-channels for account enumeration)
+    sendPasswordResetEmail({ to: normalizedEmail, resetUrl }).catch((err) =>
+      console.error("[AUTH MAILER] Dispatch error:", err.message)
+    );
 
     // Return uniform message; never leak raw token or resetUrl in public response
     res.json({

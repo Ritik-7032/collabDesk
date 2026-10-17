@@ -233,6 +233,9 @@ To eliminate redundant WAN round-trips for repeated sprint team queries, CollabD
 # Reproduce the authenticated database benchmark locally:
 cd backend && npm run benchmark
 
+# Verify live Google Gemini 3.8 Flash model connectivity & subtask generation:
+npm run verify:gemini
+
 # Run the cross-instance Redis cluster verification:
 npm run test:cluster
 

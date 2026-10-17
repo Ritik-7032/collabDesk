@@ -58,7 +58,10 @@ const generatePresignedUrl = async (req, res) => {
     }
 
     const command = new PutObjectCommand(putParams);
-    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
+    const uploadUrl = await getSignedUrl(s3, command, {
+      expiresIn: 300,
+      signableHeaders: new Set(["content-type"]),
+    });
     const fileUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
 
     res.json({ uploadUrl, fileUrl, key });

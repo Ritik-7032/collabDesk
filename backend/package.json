@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --test tests/api.test.js",
     "test:cluster": "node tests/cross-instance-test.js",
+    "verify:gemini": "node tests/verify-gemini.js",
     "benchmark": "node tests/benchmark.js",
     "dev": "nodemon server.js",
     "start": "node server.js"

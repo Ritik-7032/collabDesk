@@ -133,6 +133,13 @@ describe("CollabDesk API & Integration Test Suite", () => {
     assert.ok(res.body.uploadUrl);
     assert.ok(res.body.fileUrl);
     assert.ok(res.body.uploadUrl.includes("amazonaws.com"));
+
+    // Verify cryptographic signature locking over Content-Type and Content-Length
+    const parsedUrl = new URL(res.body.uploadUrl);
+    const signedHeaders = parsedUrl.searchParams.get("X-Amz-SignedHeaders");
+    assert.ok(signedHeaders, "Presigned URL must contain X-Amz-SignedHeaders parameter");
+    assert.ok(signedHeaders.includes("content-type"), "content-type must be bound in X-Amz-SignedHeaders");
+    assert.ok(signedHeaders.includes("content-length"), "content-length must be bound in X-Amz-SignedHeaders");
   });
 
   test("8. AI: Task breakdown endpoint returns valid checklist schema (with resilient fallback)", async () => {
