@@ -12,6 +12,7 @@ const listRoutes = require("./routes/listRoutes");
 const aiRoutes = require("./routes/aiRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const passport = require("./config/passport");
+const dbConnect = require("./config/db");
 const {
   apiLimiter,
   authLimiter,
