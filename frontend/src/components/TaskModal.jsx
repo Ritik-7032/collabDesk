@@ -103,7 +103,11 @@ export default function TaskModal({
         return;
       }
       setChecklist((prev) => [...prev, ...subtasks.map((s) => ({ text: s, done: false }))]);
-      toast.success(`Generated ${subtasks.length} actionable subtasks with AI`);
+      if (res.data.isFallback) {
+        toast.info(`Generated ${subtasks.length} template subtasks (Gemini AI offline / fallback active)`);
+      } else {
+        toast.success(`Generated ${subtasks.length} actionable subtasks with Gemini AI`);
+      }
     } catch (err) {
       toast.error(getErrorMessage(err, "AI subtask generation failed"));
     } finally {

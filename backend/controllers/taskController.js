@@ -122,17 +122,6 @@ const updateTask = async (req, res) => {
       return res.status(404).json({ message: "Task not found" });
     }
 
-    // Optimistic Concurrency Control (OCC)
-    if (expectedVersion !== undefined && expectedVersion !== null) {
-      if (Number(oldTask.version) !== Number(expectedVersion)) {
-        return res.status(409).json({
-          message: "Conflict: This task was modified by another user. Please refresh and review latest changes.",
-          currentVersion: oldTask.version,
-          expectedVersion: Number(expectedVersion),
-        });
-      }
-    }
-
     // Prevent cross-workspace list relocation
     if (list && list.toString() !== oldTask.list.toString()) {
       const targetList = await List.findById(list);
@@ -155,21 +144,46 @@ const updateTask = async (req, res) => {
       }
     }
 
-    const update = {};
-    if (status !== undefined) update.status = status;
-    if (title !== undefined) update.title = title;
-    if (description !== undefined) update.description = description;
-    if (attachmentUrl !== undefined) update.attachmentUrl = attachmentUrl;
-    if (assignedTo !== undefined) update.assignedTo = assignedTo;
-    if (list !== undefined) update.list = list;
-    if (position !== undefined) update.position = position;
-    if (labels !== undefined) update.labels = labels;
-    if (dueDate !== undefined) update.dueDate = dueDate;
-    if (checklist !== undefined) update.checklist = checklist;
-    update.$inc = { version: 1 };
+    const updateFields = {};
+    if (status !== undefined) updateFields.status = status;
+    if (title !== undefined) updateFields.title = title;
+    if (description !== undefined) updateFields.description = description;
+    if (attachmentUrl !== undefined) updateFields.attachmentUrl = attachmentUrl;
+    if (assignedTo !== undefined) updateFields.assignedTo = assignedTo;
+    if (list !== undefined) updateFields.list = list;
+    if (position !== undefined) updateFields.position = position;
+    if (labels !== undefined) updateFields.labels = labels;
+    if (dueDate !== undefined) updateFields.dueDate = dueDate;
+    if (checklist !== undefined) updateFields.checklist = checklist;
+
+    // Atomic Optimistic Concurrency Control (OCC) write
+    const filter = { _id: req.params.id };
+    if (expectedVersion !== undefined && expectedVersion !== null) {
+      filter.version = Number(expectedVersion);
+    }
+
+    const task = await Task.findOneAndUpdate(
+      filter,
+      {
+        $set: updateFields,
+        $inc: { version: 1 },
+      },
+      { returnDocument: "after", runValidators: true }
+    );
+
+    if (!task) {
+      const existing = await Task.findById(req.params.id).select("version");
+      if (!existing) {
+        return res.status(404).json({ message: "Task not found" });
+      }
+      return res.status(409).json({
+        message: "Conflict: This task was modified by another user. Please refresh and review latest changes.",
+        currentVersion: existing.version,
+        expectedVersion: Number(expectedVersion),
+      });
+    }
 
     const isListChanged = list && oldTask.list && list.toString() !== oldTask.list.toString();
-    const task = await Task.findByIdAndUpdate(req.params.id, update, { new: true });
 
     const io = req.app.get("io");
     if (io) {

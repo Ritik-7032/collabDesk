@@ -61,7 +61,13 @@ const getWorkspaceById = async (req, res) => {
       return res.status(404).json({ message: "Workspace not found" });
     }
 
-    res.json(workspace);
+    const wsObj = workspace.toObject();
+    const isOwner = String(workspace.owner) === String(req.user._id);
+    if (!isOwner && wsObj.slackWebhookUrl) {
+      wsObj.slackWebhookUrl = "configured";
+    }
+
+    res.json(wsObj);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -183,6 +189,10 @@ const updateSlackWebhook = async (req, res) => {
 
     if (!workspace) {
       return res.status(404).json({ message: "Workspace not found" });
+    }
+
+    if (String(workspace.owner) !== String(req.user._id)) {
+      return res.status(403).json({ message: "Forbidden: Only workspace owner can configure Slack integrations" });
     }
 
     if (slackWebhookUrl && !slackWebhookUrl.startsWith("https://hooks.slack.com/")) {

@@ -5,8 +5,8 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![AWS EC2](https://img.shields.io/badge/AWS-EC2%20Ubuntu-FF9900?logo=amazonec2&logoColor=white)](https://aws.amazon.com/ec2/)
 [![Socket.io](https://img.shields.io/badge/Socket.io-Real--Time-010101?logo=socketdotio&logoColor=white)](https://socket.io)
-[![Gemini AI](https://img.shields.io/badge/Google-Gemini%203.5%20Flash%20Lite-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev)
-[![Tests](https://img.shields.io/badge/Tests-9%2F9%20Passing-brightgreen.svg)](https://nodejs.org)
+[![Gemini AI](https://img.shields.io/badge/Google-Gemini%201.5%20Flash-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev)
+[![Tests](https://img.shields.io/badge/Tests-20%2F20%20Passing-brightgreen.svg)](https://nodejs.org)
 
 CollabDesk is a distributed, full-stack collaborative Kanban workspace inspired by the design principles of Linear and Notion. Architected with a **React 19** frontend deployed on **Vercel's global edge network** and a containerized **Node.js / Express** backend running in **Docker on AWS EC2**, CollabDesk delivers real-time multi-user synchronization, automated task decomposition via Gemini AI, asynchronous Slack event alerting, and direct-to-cloud file streaming via AWS S3 presigned URLs.
 
@@ -53,7 +53,7 @@ flowchart TD
     subgraph DataServices ["Cloud Infrastructure & Third-Party APIs"]
         MongoDB[(MongoDB Atlas)]
         S3["AWS S3 Bucket (Direct Binary Storage)"]
-        Gemini["Google Gemini 3.5 Flash Lite"]
+        Gemini["Google Gemini 1.5 Flash"]
         Razorpay["Razorpay Payment Gateway"]
         Slack["Slack Channels (#team-updates)"]
     end
@@ -79,10 +79,10 @@ flowchart TD
 * **Multi-Workspace Real-Time Sync:** Real-time state synchronization via authenticated **Socket.io** rooms (`workspace:${workspaceId}`). Sockets authenticate via JWT handshakes, and room joins verify MongoDB workspace membership before granting subscription.
 * **Optimistic UI with Automatic Rollback:** Drag-and-drop card transitions update local React state immediately for responsive interaction. If the batch mutation fails or the server rejects the request, the UI automatically rolls back to the previous snapshot with a toast alert.
 * **Direct-to-S3 Presigned Uploads:** File attachments bypass application server memory buffers entirely. The backend validates file metadata (`fileSize <= 10MB` and MIME whitelist) and returns an AWS S3 presigned PUT URL with Content-Type signature locking.
-* **Resilient Gemini AI Breakdown:** Powered by **Google Gemini 3.5 Flash Lite** (`gemini-3.5-flash-lite`) to decompose high-level task goals into structured checklist items. Features an internal fallback handler so that upstream API rate limits or 503 spikes never break user interactions.
+* **Resilient Gemini AI Breakdown:** Powered by **Google Gemini 1.5 Flash** (`gemini-1.5-flash`) to decompose high-level task goals into structured checklist items. Features transparent status reporting and resilient template fallback so upstream API spikes never break user interactions.
 * **Fire-and-Forget Slack Alerts:** Dispatches asynchronous Slack Block Kit notifications on task creation and column moves without blocking core HTTP request-response cycles.
-* **Enterprise Security & Payments:** Google OAuth 2.0, JWT token management with Bcrypt password hashing, and server-side HMAC-SHA256 signature verification for Razorpay checkout transactions.
-* **Automated CI/CD Test Pipeline:** 9 passing integration test suites executed via Supertest and GitHub Actions validating authentication, workspace authorization, S3 signature generation, and password reset flows.
+* **Enterprise Security & Payments:** Pure `httpOnly` secure cookies with `SameSite=Lax`, anti-enumeration password resets, user-bound Razorpay orders with replay attack prevention, and masked Slack webhook URLs.
+* **Automated CI/CD Test Pipeline:** 20 hermetic integration tests and 1 live multi-node Redis cluster verification suite executed via Supertest, Socket.io client, and GitHub Actions validating authentication, atomic OCC, S3 signature security, payment replay defense, Slack webhook masking, and real-time room isolation.
 
 ---
 
@@ -275,7 +275,7 @@ CollabDesk is architected for seamless horizontal scale across multiple Node.js 
 * **Tradeoff:** External APIs (Slack, Google Gemini) are subject to transient network latency, rate limits, and outages. Blocking core database transactions on external API acknowledgments degrades latency and creates single points of failure.
 * **Solution:** Slack notifications dispatch asynchronously in a fire-and-forget pattern with isolated error handling. Similarly, the Gemini AI task decomposition controller includes an internal fallback handler so that upstream Google API 503 rate-limit spikes never crash the user experience or fail CI test suites.
 
-> 📖 **Deep Dive:** For the complete in-depth analysis of all 7 architectural decisions, failure modes, and testing strategies, see [docs/DESIGN.md](docs/DESIGN.md).
+> 📖 **Deep Dive:** For the complete in-depth analysis of all 14 architectural decisions, failure modes, and testing strategies, see [docs/DESIGN.md](docs/DESIGN.md).
 
 ---
 
@@ -297,10 +297,10 @@ collabDesk/
 │   ├── config/                # DB, Passport, Gemini, S3, Razorpay configurations
 │   ├── controllers/           # Business logic (auth, workspace, task, list, AI, upload, payment)
 │   ├── middleware/            # Helmet, JWT auth, workspaceAccess, rateLimiter & requestMetrics
-│   ├── models/                # Mongoose schemas with compound B-Tree indexes & OCC versioning
+│   ├── models/                # Mongoose schemas (User, Workspace, List, Task, Order) with OCC & indexes
 │   ├── routes/                # Express REST API route definitions
 │   ├── utils/                 # Asynchronous Slack notification service
-│   ├── tests/                 # Supertest & Socket.io 16-suite integration test runner
+│   ├── tests/                 # Supertest & Socket.io 20-test integration suite & Redis cluster test runner
 │   ├── Dockerfile             # Production-grade Node.js 20 Alpine container
 │   ├── .env.example           # Documented environment template
 │   └── server.js              # Server entry point, JWT socket handshake & room authorization
@@ -316,7 +316,9 @@ collabDesk/
 │   ├── vercel.json            # Edge reverse proxy rewrite configuration (/api/* & /socket.io/*)
 │   └── vite.config.js
 │
-├── docker-compose.yml         # Container orchestration with auto-restart policies
+├── nginx/
+│   └── nginx.conf             # Production TLS reverse proxy, WebSocket gateway & load balancer
+├── docker-compose.yml         # Container orchestration (2 backend replicas, Redis 7 & Nginx proxy)
 └── README.md
 ```
 

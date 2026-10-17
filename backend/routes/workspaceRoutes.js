@@ -21,6 +21,7 @@ router.delete("/:id/members/:memberId", protect, removeMember);
 
 // Slack Webhook integration
 router.patch("/:id/slack-webhook", protect, updateSlackWebhook);
+router.put("/:id/slack-webhook", protect, updateSlackWebhook);
 router.post("/:id/slack-test", protect, testSlackWebhook);
 
 module.exports = router;

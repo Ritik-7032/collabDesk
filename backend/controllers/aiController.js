@@ -9,11 +9,12 @@ const generateSubtasks = async (req, res) => {
     }
 
     let subtasks = [];
+    let isFallback = false;
 
-    // Attempt generation via Google Gemini API
-    if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "mock_key") {
+    // Attempt generation via official Google Gemini 1.5 Flash model
+    if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "mock_key" && process.env.GEMINI_API_KEY !== "dummy_gemini_test_key") {
       try {
-        const modelName = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+        const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash";
         const model = genAI.getGenerativeModel({ model: modelName });
         const prompt = `Break down this task into 4-6 short, actionable subtasks. Task: "${description}". Return ONLY a JSON array of strings, no other text. Example format: ["Subtask 1", "Subtask 2"]`;
 
@@ -25,12 +26,13 @@ const generateSubtasks = async (req, res) => {
           subtasks = JSON.parse(jsonMatch[0]);
         }
       } catch (geminiError) {
-        console.warn("Gemini API call failed, falling back to resilient decomposition:", geminiError.message);
+        console.warn("Gemini API call failed, falling back to resilient template decomposition:", geminiError.message);
       }
     }
 
-    // Graceful resilient fallback for test environments or API rate-limit spikes
+    // Explicitly tracked graceful fallback for test environments or API rate-limit spikes
     if (!subtasks || subtasks.length === 0) {
+      isFallback = true;
       subtasks = [
         `Analyze and scope deliverables for: ${description.slice(0, 40)}`,
         "Implement core component logic and interface contracts",
@@ -39,7 +41,7 @@ const generateSubtasks = async (req, res) => {
       ];
     }
 
-    res.json({ subtasks });
+    res.json({ subtasks, isFallback });
   } catch (error) {
     console.error("AI generation error:", error.message);
     res.status(500).json({ message: error.message || "Failed to generate subtasks" });

@@ -148,17 +148,30 @@ describe("CollabDesk API & Integration Test Suite", () => {
     assert.ok(res.body.subtasks.length >= 2);
   });
 
-  test("9. Auth: Forgot and Reset Password token lifecycle", async () => {
-    // 1. Request reset link
+  test("9. Auth: Forgot and Reset Password token lifecycle (zero-leak & anti-enumeration)", async () => {
+    // 1. Request reset link for existing user
     const forgotRes = await request(app)
       .post("/api/auth/forgot-password")
       .send({ email: testEmail });
 
     assert.strictEqual(forgotRes.status, 200);
-    assert.ok(forgotRes.body.token);
-    const resetToken = forgotRes.body.token;
+    // Assert zero token disclosure in public HTTP response
+    assert.strictEqual(forgotRes.body.token, undefined, "Public response must NEVER leak raw reset token");
+    assert.strictEqual(forgotRes.body.resetUrl, undefined, "Public response must NEVER leak reset URL");
+    assert.ok(forgotRes.body.message.includes("If an account with that email exists"));
 
-    // 2. Set new password with token
+    // Anti-enumeration test: non-existent email returns identical 200 message
+    const anonRes = await request(app)
+      .post("/api/auth/forgot-password")
+      .send({ email: "nonexistent_target_user@fake.test" });
+    assert.strictEqual(anonRes.status, 200);
+    assert.strictEqual(anonRes.body.message, forgotRes.body.message);
+
+    // Retrieve internal test token provided only in test environment
+    const resetToken = forgotRes.body._testToken;
+    assert.ok(resetToken, "Test harness token should be present in test environment");
+
+    // 2. Set new password with cryptographic token
     const newPassword = "BrandNewSuperSecurePass456!";
     const resetRes = await request(app)
       .post("/api/auth/reset-password")
@@ -494,6 +507,163 @@ describe("CollabDesk API & Integration Test Suite", () => {
 
     const User = require("../models/User");
     await User.findOneAndDelete({ email: dualEmail });
+  });
+
+  test("18. Payment Security: Order user-binding and replay attack prevention", async () => {
+    const Order = require("../models/Order");
+    const crypto = require("crypto");
+
+    // 1. User A creates an order
+    const orderRes = await request(app)
+      .post("/api/payment/create-order")
+      .set("Authorization", `Bearer ${authToken}`);
+
+    assert.strictEqual(orderRes.status, 200);
+    const orderId = orderRes.body.id;
+    assert.ok(orderId);
+
+    // 2. Generate valid HMAC-SHA256 signature for this order
+    const paymentId = `pay_${Date.now()}`;
+    const signature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET || "rzp_test_secret_123")
+      .update(`${orderId}|${paymentId}`)
+      .digest("hex");
+
+    // 3. Register User Attacker who attempts to replay/steal User A's order
+    const attackerEmail = `attacker_${Date.now()}@collabdesk.test`;
+    await request(app).post("/api/auth/signup").send({
+      name: "Payment Attacker",
+      email: attackerEmail,
+      password: "AttackerPassword123!",
+    });
+    const attackerLogin = await request(app).post("/api/auth/login").send({
+      email: attackerEmail,
+      password: "AttackerPassword123!",
+    });
+    const attackerToken = attackerLogin.body.token;
+
+    // Attacker tries to verify User A's order
+    const replayRes = await request(app)
+      .post("/api/payment/verify-payment")
+      .set("Authorization", `Bearer ${attackerToken}`)
+      .send({
+        razorpay_order_id: orderId,
+        razorpay_payment_id: paymentId,
+        razorpay_signature: signature,
+      });
+
+    assert.strictEqual(replayRes.status, 403, "Replaying another user's order must be forbidden");
+
+    // 4. Legitimate User A verifies their own order
+    const validVerifyRes = await request(app)
+      .post("/api/payment/verify-payment")
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        razorpay_order_id: orderId,
+        razorpay_payment_id: paymentId,
+        razorpay_signature: signature,
+      });
+
+    assert.strictEqual(validVerifyRes.status, 200);
+
+    // 5. User A tries to replay the same order a second time
+    const duplicateRes = await request(app)
+      .post("/api/payment/verify-payment")
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        razorpay_order_id: orderId,
+        razorpay_payment_id: paymentId,
+        razorpay_signature: signature,
+      });
+
+    assert.strictEqual(duplicateRes.status, 409, "Duplicate payment verification must return 409 Conflict");
+
+    // Cleanup
+    await Order.deleteMany({ orderId });
+    const User = require("../models/User");
+    await User.findOneAndDelete({ email: attackerEmail });
+  });
+
+  test("19. Slack Webhook Security: URL masked from non-owners and update restricted to owner", async () => {
+    // 1. Owner sets Slack webhook
+    const setHookRes = await request(app)
+      .put(`/api/workspaces/${createdWorkspaceId}/slack-webhook`)
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({ slackWebhookUrl: "https://hooks.slack.com/services/T00/B00/X00SECRETKEY" });
+
+    assert.strictEqual(setHookRes.status, 200);
+
+    // 2. Register member user and add to workspace
+    const memberEmail = `slackmember_${Date.now()}@collabdesk.test`;
+    await request(app).post("/api/auth/signup").send({
+      name: "Slack Member",
+      email: memberEmail,
+      password: "MemberPass123!",
+    });
+    const memberLogin = await request(app).post("/api/auth/login").send({
+      email: memberEmail,
+      password: "MemberPass123!",
+    });
+    const memberToken = memberLogin.body.token;
+
+    await request(app)
+      .post(`/api/workspaces/${createdWorkspaceId}/members`)
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({ email: memberEmail });
+
+    // 3. Member reads workspace: secret Slack webhook URL must be masked to "configured"
+    const memberViewRes = await request(app)
+      .get(`/api/workspaces/${createdWorkspaceId}`)
+      .set("Authorization", `Bearer ${memberToken}`);
+
+    assert.strictEqual(memberViewRes.status, 200);
+    assert.strictEqual(
+      memberViewRes.body.slackWebhookUrl,
+      "configured",
+      "Secret Slack webhook URL must be masked from non-owners"
+    );
+
+    // 4. Member attempts to update Slack webhook: must be rejected with 403 Forbidden
+    const memberUpdateRes = await request(app)
+      .put(`/api/workspaces/${createdWorkspaceId}/slack-webhook`)
+      .set("Authorization", `Bearer ${memberToken}`)
+      .send({ slackWebhookUrl: "https://hooks.slack.com/services/MALICIOUS/HOOK/999" });
+
+    assert.strictEqual(memberUpdateRes.status, 403, "Non-owners must not be permitted to update Slack webhooks");
+
+    const User = require("../models/User");
+    await User.findOneAndDelete({ email: memberEmail });
+  });
+
+  test("20. Auth Normalization: Email case-insensitivity across signup, login, and queries", async () => {
+    const mixedEmail = `MixedCase_${Date.now()}@CollabDesk.TEST`;
+    const lowerEmail = mixedEmail.toLowerCase();
+    const pass = "MixedCasePass123!";
+
+    // 1. Signup with mixed uppercase email
+    const signupRes = await request(app)
+      .post("/api/auth/signup")
+      .send({ name: "Mixed Case User", email: mixedEmail, password: pass });
+
+    assert.strictEqual(signupRes.status, 201);
+    assert.strictEqual(signupRes.body.user.email, lowerEmail);
+
+    // 2. Login with all lowercase email succeeds
+    const loginRes = await request(app)
+      .post("/api/auth/login")
+      .send({ email: lowerEmail, password: pass });
+
+    assert.strictEqual(loginRes.status, 200);
+
+    // 3. Login with all uppercase email succeeds
+    const upperLoginRes = await request(app)
+      .post("/api/auth/login")
+      .send({ email: mixedEmail.toUpperCase(), password: pass });
+
+    assert.strictEqual(upperLoginRes.status, 200);
+
+    const User = require("../models/User");
+    await User.findOneAndDelete({ email: lowerEmail });
   });
 });
 

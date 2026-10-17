@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const User = require("../models/User");
 
 const generateToken = (userId) => {
@@ -14,12 +15,17 @@ const signup = async (req, res) => {
       return res.status(400).json({ message: "Name, email, and password are required" });
     }
 
-    const existingUser = await User.findOne({ email });
+    const normalizedEmail = email.trim().toLowerCase();
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({ message: "An account with this email already exists" });
     }
 
-    const newUser = await User.create({ name, email, password });
+    const newUser = await User.create({
+      name: name.trim(),
+      email: normalizedEmail,
+      password,
+    });
 
     res.status(201).json({
       message: "User created successfully",
@@ -37,8 +43,12 @@ const signup = async (req, res) => {
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password are required" });
+    }
 
-    const user = await User.findOne({ email });
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
@@ -106,19 +116,19 @@ const forgotPassword = async (req, res) => {
       return res.status(400).json({ message: "Email is required" });
     }
 
-    const user = await User.findOne({ email: email.trim().toLowerCase() });
-    if (!user) {
-      return res.status(404).json({ message: "No account found with this email" });
-    }
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await User.findOne({ email: normalizedEmail });
 
-    if (user.authProvider === "google") {
-      return res.status(400).json({
-        message: "This account was registered using Google Sign-in. Please log in with Google.",
-      });
+    // Anti-Enumeration Defense: Always return uniform success message regardless of existence
+    const uniformResponse = {
+      message: "If an account with that email exists, a password reset link has been dispatched.",
+    };
+
+    if (!user || user.authProvider === "google") {
+      return res.json(uniformResponse);
     }
 
     // Generate cryptographic reset token
-    const crypto = require("crypto");
     const rawResetToken = crypto.randomBytes(32).toString("hex");
     const hashedToken = crypto.createHash("sha256").update(rawResetToken).digest("hex");
 
@@ -129,10 +139,14 @@ const forgotPassword = async (req, res) => {
     const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
     const resetUrl = `${clientUrl}/reset-password?token=${rawResetToken}`;
 
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[AUTH DEBUG] Password reset dispatch for ${normalizedEmail}: ${resetUrl}`);
+    }
+
+    // Return uniform message; never leak raw token or resetUrl in public response
     res.json({
-      message: "Password reset link generated successfully!",
-      resetUrl,
-      token: rawResetToken,
+      ...uniformResponse,
+      ...(process.env.NODE_ENV === "test" ? { _testToken: rawResetToken } : {}),
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -150,7 +164,6 @@ const resetPassword = async (req, res) => {
       return res.status(400).json({ message: "Password must be at least 6 characters" });
     }
 
-    const crypto = require("crypto");
     const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
 
     const user = await User.findOne({
