@@ -89,7 +89,7 @@ flowchart TD
 ## 🚀 Getting Started
 
 ### Prerequisites
-* **Docker & Docker Compose** (Recommended for single-command launch) OR **Node.js v20+**
+* **Docker & Docker Compose** (Recommended for single-command launch) OR **Node.js v22+**
 * MongoDB Atlas connection string
 * AWS IAM credentials with S3 PutObject access
 * Google Gemini API Key
@@ -304,7 +304,7 @@ collabDesk/
 │   ├── routes/                # Express REST API route definitions
 │   ├── utils/                 # Asynchronous Slack notification service
 │   ├── tests/                 # Supertest & Socket.io 20-test integration suite & Redis cluster test runner
-│   ├── Dockerfile             # Production-grade Node.js 20 Alpine container
+│   ├── Dockerfile             # Production-grade Node.js 22 Alpine container
 │   ├── .env.example           # Documented environment template
 │   └── server.js              # Server entry point, JWT socket handshake & room authorization
 │
