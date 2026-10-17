@@ -268,7 +268,7 @@ CollabDesk is architected for seamless horizontal scale across multiple Node.js 
 
 ### 2. Hybrid Real-Time Transport & Edge TLS Gateway
 * **Tradeoff:** Modern web browsers enforce strict mixed-content security policies blocking unencrypted calls (`http://` or `ws://`) from HTTPS frontend deployments. Vercel's serverless edge terminates client SSL and provides global CDN caching, but proxying directly to a public EC2 IP leaves intermediate transit over plain HTTP.
-* **Solution:** CollabDesk routes browser requests securely through Vercel's Edge Reverse Proxy (`/api/*` and `/socket.io/*`), utilizing HTTP long-polling over HTTPS with zero browser security blocks. For end-to-end encrypted production deployments and native full-duplex WebSockets (WSS), the architecture provides an orchestrated Nginx reverse proxy gateway with automated Let's Encrypt Certbot SSL renewal (`docker compose --profile production up -d`).
+* **Solution:** CollabDesk routes browser requests securely through Vercel's Edge Reverse Proxy (`/api/*` and `/socket.io/*`), utilizing HTTP long-polling over HTTPS with zero browser security blocks. *Deployment Note:* The live portfolio demo at `collab-desk-nine.vercel.app` proxies to the EC2 container over HTTP (`http://13.203.210.175:5000`); the production-grade Nginx reverse proxy and Let's Encrypt Certbot TLS gateway is provided in `docker-compose.yml` (`docker compose --profile production up -d`) for custom-domain deployments requiring end-to-end TLS termination.
 
 ### 3. WebSocket Security: JWT Handshake & Database Room Authorization
 * **Tradeoff:** Unauthenticated socket connections allow eavesdropping, and naive `io.emit()` broadcasts leak internal task updates across different organizations.
