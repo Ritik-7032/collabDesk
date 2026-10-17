@@ -22,6 +22,7 @@ const {
 const requestMetrics = require("./middleware/requestMetrics");
 
 const helmet = require("helmet");
+const cookieParser = require("cookie-parser");
 
 const app = express();
 const server = http.createServer(app);
@@ -77,6 +78,7 @@ if (process.env.REDIS_URL) {
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(requestMetrics);
 app.use(cors({ origin: corsOrigin, credentials: true }));
+app.use(cookieParser());
 app.use(express.json());
 app.use(passport.initialize());
 
@@ -99,11 +101,18 @@ app.use(errorHandler);
 
 const jwt = require("jsonwebtoken");
 
-// Strictly Authenticate Socket.io connection handshake via JWT token
+// Strictly Authenticate Socket.io connection handshake via JWT token or httpOnly cookie
 io.use((socket, next) => {
-  const token =
+  let token =
     socket.handshake.auth?.token ||
     socket.handshake.headers?.authorization?.replace("Bearer ", "");
+
+  if (!token && socket.handshake.headers?.cookie) {
+    const match = socket.handshake.headers.cookie.match(/(?:^|;\s*)token=([^;]+)/);
+    if (match) {
+      token = decodeURIComponent(match[1]);
+    }
+  }
 
   if (!token) {
     return next(new Error("Unauthorized: Missing auth token"));
@@ -112,6 +121,7 @@ io.use((socket, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     socket.user = decoded;
+    socket.data.user = decoded;
     next();
   } catch (err) {
     return next(new Error("Unauthorized: Invalid or expired auth token"));

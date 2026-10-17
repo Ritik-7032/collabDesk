@@ -6,6 +6,7 @@ const { authLimiter } = require("../middleware/rateLimiter");
 const {
   signup,
   login,
+  logout,
   getMe,
   googleCallback,
   forgotPassword,
@@ -15,6 +16,7 @@ const {
 // Sensitive endpoints protected by strict auth brute-force limiter
 router.post("/signup", authLimiter, signup);
 router.post("/login", authLimiter, login);
+router.post("/logout", logout);
 router.post("/forgot-password", authLimiter, forgotPassword);
 router.post("/reset-password", authLimiter, resetPassword);
 

@@ -437,5 +437,64 @@ describe("CollabDesk API & Integration Test Suite", () => {
       await User.findOneAndDelete({ email: userBEmail });
     }
   });
+
+  test("17. Dual-Mode Auth: httpOnly cookie login, cookie-authenticated access, and logout", async () => {
+    const dualEmail = `cookie_${Date.now()}@collabdesk.test`;
+    const dualPass = "DualModePass123!";
+
+    await request(app)
+      .post("/api/auth/signup")
+      .send({
+        name: "Cookie Tester",
+        email: dualEmail,
+        password: dualPass,
+      });
+
+    // 1. Login sets Set-Cookie with httpOnly token
+    const loginRes = await request(app)
+      .post("/api/auth/login")
+      .send({
+        email: dualEmail,
+        password: dualPass,
+      });
+
+    assert.strictEqual(loginRes.status, 200);
+    const cookies = loginRes.headers["set-cookie"];
+    assert.ok(cookies && cookies.length > 0, "Set-Cookie header should be present");
+    const tokenCookie = cookies.find((c) => c.startsWith("token="));
+    assert.ok(tokenCookie, "token cookie should be set");
+    assert.ok(tokenCookie.toLowerCase().includes("httponly"), "token cookie must be HttpOnly");
+
+    // Extract cookie value for subsequent request
+    const cookieHeaderVal = tokenCookie.split(";")[0];
+
+    // 2. Access protected endpoint using cookie ONLY (no Bearer header)
+    const meRes = await request(app)
+      .get("/api/auth/me")
+      .set("Cookie", cookieHeaderVal);
+
+    assert.strictEqual(meRes.status, 200);
+    assert.strictEqual(meRes.body.email, dualEmail);
+
+    // 3. Logout endpoint clears the cookie
+    const logoutRes = await request(app)
+      .post("/api/auth/logout")
+      .set("Cookie", cookieHeaderVal);
+
+    assert.strictEqual(logoutRes.status, 200);
+    const logoutCookies = logoutRes.headers["set-cookie"];
+    assert.ok(logoutCookies && logoutCookies.length > 0);
+    const clearedCookie = logoutCookies.find((c) => c.startsWith("token="));
+    assert.ok(
+      clearedCookie.includes("token=;") ||
+      clearedCookie.includes("Max-Age=0") ||
+      clearedCookie.toLowerCase().includes("expires"),
+      "Logout should clear or expire the token cookie"
+    );
+
+    const User = require("../models/User");
+    await User.findOneAndDelete({ email: dualEmail });
+  });
 });
+
 

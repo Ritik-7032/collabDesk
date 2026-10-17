@@ -8,11 +8,6 @@ export function AuthProvider({ children }) {
   const [initializing, setInitializing] = useState(true);
 
   const refreshUser = useCallback(async () => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      setUser(null);
-      return null;
-    }
     try {
       const res = await api.get("/auth/me");
       setUser(res.data);
@@ -29,11 +24,16 @@ export function AuthProvider({ children }) {
   }, [refreshUser]);
 
   const login = (token, userData) => {
-    localStorage.setItem("token", token);
+    if (token) localStorage.setItem("token", token);
     setUser(userData);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await api.post("/auth/logout");
+    } catch {
+      // Ignore network errors on logout
+    }
     localStorage.removeItem("token");
     setUser(null);
   };

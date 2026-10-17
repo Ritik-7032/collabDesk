@@ -17,6 +17,7 @@ export const getSocket = () => {
         const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
         cb({ token });
       },
+      withCredentials: true,
       transports: ["websocket", "polling"],
     });
   }

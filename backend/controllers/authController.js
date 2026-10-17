@@ -50,6 +50,14 @@ const login = async (req, res) => {
 
     const token = generateToken(user._id);
 
+    const isProduction = process.env.NODE_ENV === "production";
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
     res.json({
       message: "Login successful",
       token,
@@ -62,6 +70,16 @@ const login = async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
+};
+
+const logout = async (req, res) => {
+  const isProduction = process.env.NODE_ENV === "production";
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+  });
+  res.json({ message: "Logged out successfully" });
 };
 
 const getMe = async (req, res) => {
@@ -155,6 +173,7 @@ const resetPassword = async (req, res) => {
 module.exports = {
   signup,
   login,
+  logout,
   getMe,
   googleCallback,
   forgotPassword,

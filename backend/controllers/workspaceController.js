@@ -2,6 +2,7 @@ const Workspace = require("../models/Workspace");
 const List = require("../models/List");
 const User = require("../models/User");
 const { sendSlackTest } = require("../utils/slackNotifier");
+const { invalidateMembershipCache } = require("../middleware/workspaceAccess");
 
 const DEFAULT_LISTS = [
   { name: "To do", color: "teal" },
@@ -144,6 +145,8 @@ const removeMember = async (req, res) => {
       "name email"
     );
 
+    invalidateMembershipCache(workspace._id, req.params.memberId);
+
     const io = req.app.get("io");
     if (io) {
       const roomName = `workspace:${workspace._id}`;
@@ -153,7 +156,8 @@ const removeMember = async (req, res) => {
       try {
         const sockets = await io.in(roomName).fetchSockets();
         for (const s of sockets) {
-          if (s.user?.id === req.params.memberId) {
+          const userId = s.data?.user?.id || s.user?.id;
+          if (userId && String(userId) === String(req.params.memberId)) {
             s.leave(roomName);
             s.emit("error", { message: "Access revoked: you were removed from this workspace" });
           }
