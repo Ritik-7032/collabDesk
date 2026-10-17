@@ -5,7 +5,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![AWS EC2](https://img.shields.io/badge/AWS-EC2%20Ubuntu-FF9900?logo=amazonec2&logoColor=white)](https://aws.amazon.com/ec2/)
 [![Socket.io](https://img.shields.io/badge/Socket.io-Real--Time-010101?logo=socketdotio&logoColor=white)](https://socket.io)
-[![Gemini AI](https://img.shields.io/badge/Google-Gemini%201.5%20Flash-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev)
+[![Gemini AI](https://img.shields.io/badge/Google-Gemini%203.8%20Flash-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev)
 [![Tests](https://img.shields.io/badge/Tests-20%2F20%20Passing-brightgreen.svg)](https://nodejs.org)
 
 CollabDesk is a distributed, full-stack collaborative Kanban workspace inspired by the design principles of Linear and Notion. Architected with a **React 19** frontend deployed on **Vercel's global edge network** and a containerized **Node.js / Express** backend running in **Docker on AWS EC2**, CollabDesk delivers real-time multi-user synchronization, automated task decomposition via Gemini AI, asynchronous Slack event alerting, and direct-to-cloud file streaming via AWS S3 presigned URLs.
@@ -53,7 +53,7 @@ flowchart TD
     subgraph DataServices ["Cloud Infrastructure & Third-Party APIs"]
         MongoDB[(MongoDB Atlas)]
         S3["AWS S3 Bucket (Direct Binary Storage)"]
-        Gemini["Google Gemini 1.5 Flash"]
+        Gemini["Google Gemini 3.8 Flash"]
         Razorpay["Razorpay Payment Gateway"]
         Slack["Slack Channels (#team-updates)"]
     end
@@ -77,11 +77,11 @@ flowchart TD
 ## 🌟 Key Engineering Highlights
 
 * **Multi-Workspace Real-Time Sync:** Real-time state synchronization via authenticated **Socket.io** rooms (`workspace:${workspaceId}`). Sockets authenticate via JWT handshakes, and room joins verify MongoDB workspace membership before granting subscription.
-* **Optimistic UI with Automatic Rollback:** Drag-and-drop card transitions update local React state immediately for responsive interaction. If the batch mutation fails or the server rejects the request, the UI automatically rolls back to the previous snapshot with a toast alert.
-* **Direct-to-S3 Presigned Uploads:** File attachments bypass application server memory buffers entirely. The backend validates file metadata (`fileSize <= 10MB` and MIME whitelist) and returns an AWS S3 presigned PUT URL with Content-Type signature locking.
-* **Resilient Gemini AI Breakdown:** Powered by **Google Gemini 1.5 Flash** (`gemini-1.5-flash`) to decompose high-level task goals into structured checklist items. Features transparent status reporting and resilient template fallback so upstream API spikes never break user interactions.
+* **Optimistic UI with Server Reconciliation:** Drag-and-drop card transitions update local React state immediately for zero-perceived-latency interaction. If the batch mutation fails or the server rejects the request, the client alerts the user with a toast and triggers an immediate `fetchAll()` reconciliation to resync state against the database.
+* **Direct-to-S3 Presigned Uploads:** File attachments bypass application server memory buffers entirely. The backend validates file metadata (`fileSize <= 10MB` and MIME whitelist) and returns an AWS S3 presigned PUT URL with Content-Type and Content-Length signature locking.
+* **Resilient Gemini AI Breakdown:** Powered by **Google Gemini 3.8 Flash** (`gemini-3.8-flash`) to decompose high-level task goals into structured checklist items. Features transparent status reporting and resilient template fallback so upstream API spikes never break user interactions.
 * **Fire-and-Forget Slack Alerts:** Dispatches asynchronous Slack Block Kit notifications on task creation and column moves without blocking core HTTP request-response cycles.
-* **Enterprise Security & Payments:** Pure `httpOnly` secure cookies with `SameSite=Lax`, anti-enumeration password resets, user-bound Razorpay orders with replay attack prevention, and masked Slack webhook URLs.
+* **Enterprise Security & Payments:** Pure `httpOnly` secure cookies with `SameSite=Lax`, anti-enumeration password resets with automated mailer dispatch, atomic user-bound Razorpay orders with replay attack prevention, and masked Slack webhook URLs across single and list endpoints.
 * **Automated CI/CD Test Pipeline:** 20 hermetic integration tests and 1 live multi-node Redis cluster verification suite executed via Supertest, Socket.io client, and GitHub Actions validating authentication, atomic OCC, S3 signature security, payment replay defense, Slack webhook masking, and real-time room isolation.
 
 ---
@@ -161,7 +161,7 @@ npm run build
 | `GET` | `/api/workspaces` | Fetch all workspaces user belongs to | 🔒 Yes |
 | `POST` | `/api/workspaces/:id/members` | Invite team member by email | 🔒 Yes |
 | `DELETE` | `/api/workspaces/:id/members/:mId` | Remove member from workspace (Owner only) | 🔒 Yes |
-| `PATCH` | `/api/workspaces/:id/slack-webhook` | Update Slack incoming webhook URL | 🔒 Yes |
+| `PUT, PATCH` | `/api/workspaces/:id/slack-webhook` | Update Slack incoming webhook URL (Workspace Owner only) | 🔒 Yes |
 | `POST` | `/api/workspaces/:id/slack-test` | Dispatch test ping to Slack channel | 🔒 Yes |
 | `GET` | `/api/lists/workspace/:wsId` | Fetch ordered columns for a workspace | 🔒 Yes |
 | `POST` | `/api/lists` | Create a new custom column | 🔒 Yes |
@@ -172,7 +172,7 @@ npm run build
 | `PUT` | `/api/tasks/reorder/bulk` | Drag-and-drop batch position update | 🔒 Yes |
 | `POST` | `/api/tasks/:id/comments` | Add threaded comment to card | 🔒 Yes |
 | `POST` | `/api/upload/presign` | Generate direct S3 Presigned PUT URL | 🔒 Yes |
-| `POST` | `/api/ai/generate-subtasks` | AI task decomposition via Gemini 3.5 | 🔒 Yes |
+| `POST` | `/api/ai/generate-subtasks` | AI task decomposition via Gemini 3.8 Flash (with resilient fallback) | 🔒 Yes |
 | `POST` | `/api/payment/create-order` | Create Razorpay order for lifetime Pro plan | 🔒 Yes |
 | `POST` | `/api/payment/verify-payment` | Verify HMAC-SHA256 signature & upgrade plan | 🔒 Yes |
 
@@ -259,13 +259,13 @@ CollabDesk is architected for seamless horizontal scale across multiple Node.js 
 
 ## 🧠 Core Design Decisions & Engineering Tradeoffs
 
-### 1. Direct S3 Presigned Uploads: Server Offloading vs. Size Enforcement
-* **Tradeoff:** Streaming uploads through Express (`multer.memoryStorage`) buffers raw bytes directly in heap memory, risking event loop starvation or Out-Of-Memory (OOM) crashes under concurrent load. Conversely, presigned PUT URLs delegate binary transfer to AWS S3, but cannot inspect file bytes on the server during upload.
-* **Solution:** CollabDesk implements server-side pre-validation (`fileSize <= 10MB` and MIME whitelist) before generating an AWS S3 presigned PUT URL with `ContentType` signature locking. Mismatched content types are rejected by S3. For hard byte-level size enforcement on S3 without server buffering, AWS S3 Presigned POST with a `content-length-range` policy condition represents the production next step.
+### 1. Direct S3 Presigned Uploads: Server Offloading vs. Cryptographic Size Enforcement
+* **Tradeoff:** Streaming uploads through Express (`multer.memoryStorage`) buffers raw bytes directly in heap memory, risking event loop starvation or Out-Of-Memory (OOM) crashes under concurrent load. Conversely, naive presigned URLs delegate binary transfer to AWS S3 without verifying byte payloads.
+* **Solution:** CollabDesk implements strict server-side pre-validation (`fileSize <= 10MB` and strict MIME whitelist) before generating an AWS S3 presigned PUT URL with `ContentType` and `ContentLength` cryptographically bound into `X-Amz-SignedHeaders`. If a client attempts to upload an altered payload or exceeds the signed size, AWS S3 cryptographically rejects the request with `SignatureDoesNotMatch`.
 
-### 2. Hybrid Real-Time Transport: WebSockets vs. HTTP Long-Polling
-* **Tradeoff:** Vercel's serverless edge terminates SSL and provides global static caching, but does not support persistent TCP WebSocket upgrade handshakes (HTTP 101). Conversely, connecting directly to an HTTP backend IP triggers browser Mixed Content security blocks.
-* **Solution:** CollabDesk routes Socket.io traffic through Vercel's Edge Reverse Proxy (`/socket.io/*`), utilizing HTTP long-polling securely over HTTPS with zero browser security blocks. For native full-duplex WebSockets (WSS), the architecture supports direct connection to an SSL-terminated host (e.g. Nginx on EC2).
+### 2. Hybrid Real-Time Transport & Edge TLS Gateway
+* **Tradeoff:** Modern web browsers enforce strict mixed-content security policies blocking unencrypted calls (`http://` or `ws://`) from HTTPS frontend deployments. Vercel's serverless edge terminates client SSL and provides global CDN caching, but proxying directly to a public EC2 IP leaves intermediate transit over plain HTTP.
+* **Solution:** CollabDesk routes browser requests securely through Vercel's Edge Reverse Proxy (`/api/*` and `/socket.io/*`), utilizing HTTP long-polling over HTTPS with zero browser security blocks. For end-to-end encrypted production deployments and native full-duplex WebSockets (WSS), the architecture provides an orchestrated Nginx reverse proxy gateway with automated Let's Encrypt Certbot SSL renewal (`docker compose --profile production up -d`).
 
 ### 3. WebSocket Security: JWT Handshake & Database Room Authorization
 * **Tradeoff:** Unauthenticated socket connections allow eavesdropping, and naive `io.emit()` broadcasts leak internal task updates across different organizations.

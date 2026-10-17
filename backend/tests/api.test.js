@@ -623,6 +623,18 @@ describe("CollabDesk API & Integration Test Suite", () => {
       "Secret Slack webhook URL must be masked from non-owners"
     );
 
+    // 3b. Member lists workspaces via GET /api/workspaces: secret Slack webhook URL must also be masked
+    const memberListRes = await request(app)
+      .get("/api/workspaces")
+      .set("Authorization", `Bearer ${memberToken}`);
+    assert.strictEqual(memberListRes.status, 200);
+    const listedWs = memberListRes.body.find((w) => String(w._id) === String(createdWorkspaceId));
+    assert.strictEqual(
+      listedWs?.slackWebhookUrl,
+      "configured",
+      "Secret Slack webhook URL must be masked in workspace list endpoint for non-owners"
+    );
+
     // 4. Member attempts to update Slack webhook: must be rejected with 403 Forbidden
     const memberUpdateRes = await request(app)
       .put(`/api/workspaces/${createdWorkspaceId}/slack-webhook`)

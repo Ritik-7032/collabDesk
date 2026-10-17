@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const User = require("../models/User");
+const { sendPasswordResetEmail } = require("../utils/mailer");
 
 const generateToken = (userId) => {
   return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
@@ -139,9 +140,8 @@ const forgotPassword = async (req, res) => {
     const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
     const resetUrl = `${clientUrl}/reset-password?token=${rawResetToken}`;
 
-    if (process.env.NODE_ENV !== "production") {
-      console.log(`[AUTH DEBUG] Password reset dispatch for ${normalizedEmail}: ${resetUrl}`);
-    }
+    // Dispatch email via configured SMTP (or log fallback for staging/dev)
+    await sendPasswordResetEmail({ to: normalizedEmail, resetUrl });
 
     // Return uniform message; never leak raw token or resetUrl in public response
     res.json({

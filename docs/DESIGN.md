@@ -10,14 +10,15 @@ This document provides a comprehensive technical breakdown of the architectural 
 Modern client browsers enforce a strict **Mixed Content security policy**: an HTTPS page (like Vercel `https://...`) cannot establish unencrypted WebSocket connections (`ws://`) or insecure HTTP requests to an IP-only backend (`http://...`). Furthermore, Vercel's Serverless Edge Reverse Proxy does not support persistent TCP WebSocket upgrades (HTTP 101 Switching Protocols).
 
 ### Architectural Solution
-CollabDesk handles real-time synchronization through a dual-transport strategy via **Socket.io**:
-1. **Primary Gateway Transport (HTTP Long-Polling via Vercel Reverse Proxy):**
-   - Socket.io client routes connection requests through `/socket.io/*` on the Vercel edge domain.
-   - Vercel forwards the polling cycles securely over HTTPS to the Dockerized Express backend on AWS EC2.
-   - Real-time updates propagate across connected clients with sub-second delivery and zero mixed-content warnings.
-2. **Native WebSocket (WSS) Upgrade Path:**
-   - For direct full-duplex TCP WebSockets without intermediate polling, TLS termination occurs directly on the backend host (via Nginx or Cloudflare Tunnel with valid SSL/TLS certificates).
-   - This decouples serverless edge routing from long-lived socket lifecycles.
+CollabDesk handles real-time synchronization and API routing through a two-tiered architectural strategy:
+1. **Staging / Demo Gateway (HTTP Long-Polling via Vercel Edge Reverse Proxy):**
+   - Socket.io client routes connection requests through `/socket.io/*` and REST calls through `/api/*` on the Vercel edge domain.
+   - Vercel forwards requests to the Dockerized Express backend on AWS EC2.
+   - Real-time updates propagate across connected clients with sub-second delivery and zero mixed-content warnings in client browsers.
+   - *Transit Note:* In the free-tier live demo, Vercel edge proxies to the public EC2 host over HTTP. While browser-to-Vercel communication is encrypted via TLS with `SameSite=Lax` cookies, end-to-end encryption for production requires host-level TLS termination.
+2. **Production End-to-End TLS Termination Gateway (Nginx + Certbot):**
+   - For complete end-to-end encryption and direct full-duplex TCP WebSockets (`wss://`), `docker-compose.yml` provides a production-grade Nginx reverse proxy gateway accompanied by an automated Let's Encrypt Certbot renewal container (`docker compose --profile production up -d`).
+   - Nginx handles TLS termination (TLSv1.2/1.3, strict HSTS, secure ciphers) and load balances traffic across internal backend replicas with HTTP 101 WebSocket connection upgrade headers.
 
 ---
 
@@ -132,18 +133,27 @@ Awaiting full server round-trips before re-rendering Kanban drag-and-drop action
 
 ---
 
-## 9. Payment Integrity: Server-Side HMAC-SHA256 Verification
+## 9. Payment Integrity: Server-Side HMAC-SHA256 Verification & Atomic Anti-Replay
 
 ### Design Tradeoff
-Client-side payment callbacks cannot be trusted, as users can intercept and spoof frontend payment success responses.
+Client-side payment callbacks cannot be trusted, as malicious actors can intercept frontend network payloads, spoof success responses, or attempt replay attacks by re-submitting previously processed payment IDs across multiple user accounts.
 
 ### Architectural Solution
-1. The frontend initiates an order via `POST /api/payment/create-order` and receives a verified `order_id` from the Razorpay API.
-2. Upon user payment completion in Razorpay's checkout modal, the client receives `razorpay_payment_id` and `razorpay_signature`.
-3. The client submits these credentials to `POST /api/payment/verify-payment`.
-4. The server independently recalculates the expected signature:
+1. **User-Bound Order Creation:** When the client calls `POST /api/payment/create-order`, the backend creates a Razorpay order and immediately persists an `Order` document (`backend/models/Order.js`) binding `orderId`, the authenticated `user: req.user._id`, and `status: "created"`.
+2. **Cryptographic HMAC-SHA256 Signature Verification:**
+   Upon payment completion, the client submits `razorpay_order_id`, `razorpay_payment_id`, and `razorpay_signature` to `POST /api/payment/verify-payment`. The server recalculates:
    $$\text{HMAC-SHA256}(\text{order\_id} + "|" + \text{payment\_id}, \text{RAZORPAY\_KEY\_SECRET})$$
-5. The workspace is upgraded in MongoDB only upon a strict cryptographic match.
+   Any signature tampering results in immediate rejection and status transition to `"failed"`.
+3. **Atomic Single-Query State Transition (Anti-Replay TOCTOU Defense):**
+   To prevent parallel race conditions where two simultaneous verification requests attempt to redeem the same order, the backend executes an atomic MongoDB find-and-update:
+   ```javascript
+   const order = await Order.findOneAndUpdate(
+     { orderId: razorpay_order_id, user: req.user._id, status: "created" },
+     { $set: { status: "paid", paymentId: razorpay_payment_id, paidAt: new Date() } },
+     { returnDocument: "after" }
+   );
+   ```
+   If `order` is null, the handler checks if the order was already marked `"paid"` (returning HTTP 409 Conflict) or belonged to a different user (HTTP 403 Forbidden). Only upon an atomic `created -> paid` state transition is the user plan upgraded in MongoDB.
 
 ---
 
@@ -170,12 +180,18 @@ End-to-end integration tests that call live external cloud APIs (e.g., AWS S3, G
 In a collaborative multi-user Kanban environment, two teammates may open and edit the same task card simultaneously. A last-write-wins (LWW) strategy blindly overwrites the previous user's changes without warning, causing silent data loss.
 
 ### Architectural Solution
-CollabDesk implements schema-level Optimistic Concurrency Control:
+CollabDesk implements schema-level, atomic Optimistic Concurrency Control:
 1. Every task document includes an integer `version` field (defaulting to `1`).
-2. Every successful update atomically increments the version using MongoDB `$inc: { version: 1 }`.
-3. When the client submits an update with `expectedVersion`:
-   - If `task.version !== expectedVersion`, the server aborts the update and returns **HTTP 409 Conflict** with `{ message, currentVersion, expectedVersion }`.
-   - The frontend prompts the user to refresh the modal and review the latest edits, preventing accidental overwrites.
+2. Updates execute via single-query atomic operations:
+   ```javascript
+   const task = await Task.findOneAndUpdate(
+     { _id: taskId, version: expectedVersion },
+     { $set: updateFields, $inc: { version: 1 } },
+     { returnDocument: "after", runValidators: true }
+   );
+   ```
+3. By leveraging MongoDB WiredTiger document-level locking, the read and write occur in a single atomic database engine transaction. If a concurrent writer has already incremented the version, the filter matches 0 documents and the server returns **HTTP 409 Conflict** with `{ message, currentVersion, expectedVersion }`, completely eliminating TOCTOU race windows.
+4. The frontend catches HTTP 409 and prompts the user with an actionable toast alert to refresh and review the latest edits.
 
 ---
 

@@ -11,10 +11,10 @@ const generateSubtasks = async (req, res) => {
     let subtasks = [];
     let isFallback = false;
 
-    // Attempt generation via official Google Gemini 1.5 Flash model
+    // Attempt generation via verified active Google Gemini 3.8 Flash model
     if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "mock_key" && process.env.GEMINI_API_KEY !== "dummy_gemini_test_key") {
       try {
-        const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+        const modelName = process.env.GEMINI_MODEL || "gemini-3.8-flash";
         const model = genAI.getGenerativeModel({ model: modelName });
         const prompt = `Break down this task into 4-6 short, actionable subtasks. Task: "${description}". Return ONLY a JSON array of strings, no other text. Example format: ["Subtask 1", "Subtask 2"]`;
 

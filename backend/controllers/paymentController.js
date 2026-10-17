@@ -35,21 +35,7 @@ const verifyPayment = async (req, res) => {
       return res.status(400).json({ message: "Missing required payment verification fields" });
     }
 
-    // 1. Fetch order from database and verify user ownership & state
-    const order = await Order.findOne({ orderId: razorpay_order_id });
-    if (!order) {
-      return res.status(404).json({ message: "Order not found" });
-    }
-
-    if (String(order.user) !== String(req.user._id)) {
-      return res.status(403).json({ message: "Forbidden: Order does not belong to the authenticated user" });
-    }
-
-    if (order.status === "paid") {
-      return res.status(409).json({ message: "Conflict: This payment order has already been processed" });
-    }
-
-    // 2. Cryptographic HMAC-SHA256 signature verification
+    // 1. Cryptographic HMAC-SHA256 signature verification
     const body = razorpay_order_id + "|" + razorpay_payment_id;
     const expectedSignature = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -57,16 +43,40 @@ const verifyPayment = async (req, res) => {
       .digest("hex");
 
     if (expectedSignature !== razorpay_signature) {
-      order.status = "failed";
-      await order.save();
+      await Order.findOneAndUpdate(
+        { orderId: razorpay_order_id, user: req.user._id },
+        { $set: { status: "failed" } }
+      );
       return res.status(400).json({ message: "Payment verification failed: Invalid cryptographic signature" });
     }
 
-    // 3. Atomically mark order as paid & upgrade user plan
-    order.status = "paid";
-    order.paymentId = razorpay_payment_id;
-    order.paidAt = new Date();
-    await order.save();
+    // 2. Atomic state transition: created -> paid (single query eliminates TOCTOU parallel replay races)
+    const order = await Order.findOneAndUpdate(
+      { orderId: razorpay_order_id, user: req.user._id, status: "created" },
+      {
+        $set: {
+          status: "paid",
+          paymentId: razorpay_payment_id,
+          paidAt: new Date(),
+        },
+      },
+      { returnDocument: "after" }
+    );
+
+    if (!order) {
+      // Diagnostic disambiguation for unauthorized, missing, or already-settled orders
+      const existing = await Order.findOne({ orderId: razorpay_order_id });
+      if (!existing) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+      if (String(existing.user) !== String(req.user._id)) {
+        return res.status(403).json({ message: "Forbidden: Order does not belong to the authenticated user" });
+      }
+      if (existing.status === "paid") {
+        return res.status(409).json({ message: "Conflict: This payment order has already been processed" });
+      }
+      return res.status(400).json({ message: "Invalid order status for payment verification" });
+    }
 
     await User.findByIdAndUpdate(req.user._id, { plan: "premium" });
 

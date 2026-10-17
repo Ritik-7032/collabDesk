@@ -44,7 +44,15 @@ const getWorkspaces = async (req, res) => {
       "members",
       "name email"
     );
-    res.json(workspaces);
+    const sanitized = workspaces.map((ws) => {
+      const wsObj = ws.toObject();
+      const isOwner = String(ws.owner) === String(req.user._id);
+      if (!isOwner && wsObj.slackWebhookUrl) {
+        wsObj.slackWebhookUrl = "configured";
+      }
+      return wsObj;
+    });
+    res.json(sanitized);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

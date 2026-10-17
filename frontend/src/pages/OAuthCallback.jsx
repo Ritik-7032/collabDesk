@@ -24,6 +24,10 @@ export default function OAuthCallback() {
       return;
     }
 
+    if (token) {
+      localStorage.setItem("token", token);
+    }
+
     refreshUser().then((user) => {
       if (user) {
         toast.success(`Welcome back, ${user.name}`);
