@@ -92,7 +92,6 @@ export default function WorkspacePage() {
     const onConnectError = (err) => {
       console.warn("Socket connection error:", err.message);
       if (err.message && err.message.toLowerCase().includes("unauthorized")) {
-        localStorage.removeItem("token");
         navigate("/login");
       }
     };

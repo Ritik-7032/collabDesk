@@ -13,7 +13,6 @@ export function AuthProvider({ children }) {
       setUser(res.data);
       return res.data;
     } catch {
-      localStorage.removeItem("token");
       setUser(null);
       return null;
     }
@@ -23,8 +22,7 @@ export function AuthProvider({ children }) {
     refreshUser().finally(() => setInitializing(false));
   }, [refreshUser]);
 
-  const login = (token, userData) => {
-    if (token) localStorage.setItem("token", token);
+  const login = (_token, userData) => {
     setUser(userData);
   };
 
@@ -34,7 +32,6 @@ export function AuthProvider({ children }) {
     } catch {
       // Ignore network errors on logout
     }
-    localStorage.removeItem("token");
     setUser(null);
   };
 

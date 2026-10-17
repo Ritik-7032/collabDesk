@@ -54,7 +54,7 @@ const login = async (req, res) => {
     res.cookie("token", token, {
       httpOnly: true,
       secure: isProduction,
-      sameSite: isProduction ? "none" : "lax",
+      sameSite: "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
@@ -77,7 +77,7 @@ const logout = async (req, res) => {
   res.clearCookie("token", {
     httpOnly: true,
     secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
+    sameSite: "lax",
   });
   res.json({ message: "Logged out successfully" });
 };
@@ -89,7 +89,14 @@ const getMe = async (req, res) => {
 const googleCallback = (req, res) => {
   const token = generateToken(req.user._id);
   const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-  res.redirect(`${clientUrl}/oauth-callback?token=${token}`);
+  const isProduction = process.env.NODE_ENV === "production";
+  res.cookie("token", token, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+  res.redirect(`${clientUrl}/oauth-callback`);
 };
 
 const forgotPassword = async (req, res) => {

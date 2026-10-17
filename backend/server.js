@@ -55,10 +55,11 @@ const io = new Server(server, {
 });
 app.set("io", io);
 
-// Horizontal Scaling Layer: Redis Pub/Sub Adapter for Multi-Instance Socket.io
+// Horizontal Scaling Layer: Redis Pub/Sub Adapter for Multi-Instance Socket.io & Cache Invalidation
 if (process.env.REDIS_URL) {
   const { createClient } = require("redis");
   const { createAdapter } = require("@socket.io/redis-adapter");
+  const { invalidateMembershipCache } = require("./middleware/workspaceAccess");
   const pubClient = createClient({ url: process.env.REDIS_URL });
   const subClient = pubClient.duplicate();
 
@@ -68,7 +69,19 @@ if (process.env.REDIS_URL) {
   Promise.all([pubClient.connect(), subClient.connect()])
     .then(() => {
       io.adapter(createAdapter(pubClient, subClient));
-      console.log("Socket.io Redis adapter connected: Multi-instance cluster enabled.");
+      app.set("redisPub", pubClient);
+
+      // Distributed cluster cache invalidation subscriber
+      subClient.subscribe("collabdesk:cache:invalidate", (message) => {
+        try {
+          const { wsId, userId } = JSON.parse(message);
+          invalidateMembershipCache(wsId, userId);
+        } catch (e) {
+          console.warn("Error parsing cache invalidate message:", e.message);
+        }
+      });
+
+      console.log("Socket.io Redis adapter connected: Multi-instance cluster & cache sync enabled.");
     })
     .catch((err) => {
       console.warn("Failed to connect Redis adapter, falling back to in-memory:", err.message);

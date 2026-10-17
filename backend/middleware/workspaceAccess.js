@@ -16,6 +16,19 @@ const invalidateMembershipCache = (wsId, userId) => {
   }
 };
 
+const broadcastCacheInvalidation = (app, wsId, userId) => {
+  invalidateMembershipCache(wsId, userId);
+  if (app) {
+    const pub = app.get("redisPub");
+    if (pub && pub.isOpen) {
+      pub.publish(
+        "collabdesk:cache:invalidate",
+        JSON.stringify({ wsId: String(wsId), userId: userId ? String(userId) : null })
+      ).catch((err) => console.warn("Redis publish invalidation error:", err.message));
+    }
+  }
+};
+
 /**
  * Middleware factory to enforce workspace membership.
  * Verifies that the authenticated user (req.user._id) is a member of the resolved workspace.
@@ -89,4 +102,5 @@ module.exports = {
   viaTaskId,
   viaListId,
   invalidateMembershipCache,
+  broadcastCacheInvalidation,
 };

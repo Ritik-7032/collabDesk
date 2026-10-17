@@ -1,10 +1,11 @@
 /**
- * CollabDesk Cross-Instance Horizontal Scaling Verification Test
+ * CollabDesk Cross-Instance Horizontal Scaling & Distributed Invalidation Suite
  *
- * Verifies:
- * 1. Redis pub/sub adapter broadcasts workspace room events across distinct instances (Instance B -> Instance A).
- * 2. RemoteSocket eviction: fetchSockets() on Instance B correctly serializes socket.data.user
- *    and revokes room membership from clients connected to Instance A.
+ * Verifies real CollabDesk application logic across two distinct server nodes:
+ * 1. Redis pub/sub room event propagation (Instance B -> Redis -> Instance A -> Client Socket).
+ * 2. Cross-instance RemoteSocket eviction via socket.data.user serialization (Instance B evicts socket on Instance A).
+ * 3. Cross-instance cache invalidation: REST removeMember on Instance B publishes to Redis,
+ *    immediately purging the in-memory memberCache on Instance A so subsequent REST calls return HTTP 403.
  */
 
 const http = require("http");
@@ -13,186 +14,273 @@ const ioClient = require("socket.io-client");
 const { createClient } = require("redis");
 const { createAdapter } = require("@socket.io/redis-adapter");
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
+const request = require("supertest");
 const assert = require("assert");
+
+process.env.NODE_ENV = "test";
+require("dotenv").config();
 
 const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 const JWT_SECRET = process.env.JWT_SECRET || "ci_hermetic_super_secret_jwt_key_12345";
+const REQUIRE_REDIS = process.env.REQUIRE_REDIS === "true" || process.argv.includes("--require-redis");
 
-async function main() {
+const dbConnect = require("../config/db");
+const User = require("../models/User");
+const Workspace = require("../models/Workspace");
+const List = require("../models/List");
+const Task = require("../models/Task");
+const { invalidateMembershipCache } = require("../middleware/workspaceAccess");
+
+// Factory to create a fully configured CollabDesk server instance
+function createCollabDeskInstance(pubClient, subClient) {
+  const express = require("express");
+  const cors = require("cors");
+  const cookieParser = require("cookie-parser");
+  const helmet = require("helmet");
+
+  const app = express();
+  const server = http.createServer(app);
+
+  const io = new Server(server, {
+    cors: { origin: "*", credentials: true },
+  });
+
+  io.adapter(createAdapter(pubClient, subClient));
+  app.set("io", io);
+  app.set("redisPub", pubClient);
+
+  // Distributed cluster cache invalidation subscriber
+  subClient.subscribe("collabdesk:cache:invalidate", (message) => {
+    try {
+      const { wsId, userId } = JSON.parse(message);
+      invalidateMembershipCache(wsId, userId);
+    } catch (e) {
+      console.warn("Subscriber error:", e.message);
+    }
+  });
+
+  app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+  app.use(cors({ origin: true, credentials: true }));
+  app.use(cookieParser());
+  app.use(express.json());
+
+  // Mount CollabDesk application routes
+  app.use("/api/auth", require("../routes/authRoutes"));
+  app.use("/api/workspaces", require("../routes/workspaceRoutes"));
+  app.use("/api/tasks", require("../routes/taskRoutes"));
+  app.use("/api/lists", require("../routes/listRoutes"));
+
+  // CollabDesk socket handshake with socket.data.user serialization
+  io.use((socket, next) => {
+    let token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace("Bearer ", "");
+    if (!token && socket.handshake.headers?.cookie) {
+      const match = socket.handshake.headers.cookie.match(/(?:^|;\s*)token=([^;]+)/);
+      if (match) token = decodeURIComponent(match[1]);
+    }
+    if (!token) return next(new Error("Unauthorized: Missing auth token"));
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      socket.user = decoded;
+      socket.data.user = decoded;
+      next();
+    } catch {
+      next(new Error("Unauthorized: Invalid token"));
+    }
+  });
+
+  // CollabDesk fail-closed room join
+  io.on("connection", (socket) => {
+    socket.on("joinWorkspace", async (workspaceId) => {
+      if (!workspaceId || !mongoose.isValidObjectId(workspaceId)) {
+        return socket.emit("error", { message: "Invalid workspace ID" });
+      }
+      try {
+        const isMember = await Workspace.exists({
+          _id: workspaceId,
+          members: socket.user?.id,
+        });
+        if (!isMember) {
+          return socket.emit("error", { message: "Unauthorized workspace access" });
+        }
+        socket.join(`workspace:${workspaceId}`);
+      } catch {
+        socket.emit("error", { message: "Could not join workspace" });
+      }
+    });
+  });
+
+  return { app, server, io };
+}
+
+async function runClusterVerification() {
   console.log("============================================================");
-  console.log("CollabDesk Cross-Instance Redis Adapter Test");
-  console.log(`Checking Redis connection at: ${REDIS_URL}`);
+  console.log("CollabDesk Multi-Instance Cross-Node Verification Suite");
+  console.log(`Connecting to Redis: ${REDIS_URL}`);
   console.log("============================================================");
 
-  let redisAvailable = false;
+  // 1. Probe Redis Connectivity
   try {
     const probe = createClient({ url: REDIS_URL });
     await probe.connect();
     await probe.ping();
     await probe.disconnect();
-    redisAvailable = true;
-    console.log("Redis is reachable. Running live multi-instance cluster test...\n");
+    console.log("✔ Redis cluster broker is healthy.\n");
   } catch (err) {
-    console.warn(`[NOTICE] Redis not reachable on ${REDIS_URL} (${err.message}).`);
-    console.warn("To run with live Redis, execute: docker compose up -d redis");
-    console.log("Verifying RemoteSocket serialization contract in-memory...\n");
+    if (REQUIRE_REDIS) {
+      console.error(`✖ FATAL: Redis is required for cluster test but unreachable at ${REDIS_URL}: ${err.message}`);
+      process.exit(1);
+    }
+    console.warn(`[NOTICE] Redis not reachable on ${REDIS_URL}. Skipping live cluster assertions.`);
+    console.warn("To run with live Redis, start container: docker compose up -d redis\n");
+    process.exit(0);
   }
 
-  // 1. Initialize Server Instance A
-  const httpServerA = http.createServer();
-  const ioA = new Server(httpServerA, { cors: { origin: "*" } });
+  // 2. Connect Database
+  await dbConnect();
 
-  // 2. Initialize Server Instance B
-  const httpServerB = http.createServer();
-  const ioB = new Server(httpServerB, { cors: { origin: "*" } });
+  // 3. Setup Redis Clients for Instance A & B
+  const pubA = createClient({ url: REDIS_URL });
+  const subA = pubA.duplicate();
+  const pubB = createClient({ url: REDIS_URL });
+  const subB = pubB.duplicate();
 
-  let pubClientA, subClientA, pubClientB, subClientB;
+  await Promise.all([pubA.connect(), subA.connect(), pubB.connect(), subB.connect()]);
 
-  if (redisAvailable) {
-    pubClientA = createClient({ url: REDIS_URL });
-    subClientA = pubClientA.duplicate();
-    pubClientB = createClient({ url: REDIS_URL });
-    subClientB = pubClientB.duplicate();
+  // 4. Instantiate Instance A and Instance B
+  const instanceA = createCollabDeskInstance(pubA, subA);
+  const instanceB = createCollabDeskInstance(pubB, subB);
 
-    await Promise.all([
-      pubClientA.connect(),
-      subClientA.connect(),
-      pubClientB.connect(),
-      subClientB.connect(),
-    ]);
+  const portA = await new Promise((r) => instanceA.server.listen(0, () => r(instanceA.server.address().port)));
+  const portB = await new Promise((r) => instanceB.server.listen(0, () => r(instanceB.server.address().port)));
 
-    ioA.adapter(createAdapter(pubClientA, subClientA));
-    ioB.adapter(createAdapter(pubClientB, subClientB));
-  }
+  console.log(`- Instance A online on port :${portA}`);
+  console.log(`- Instance B online on port :${portB}`);
 
-  // Setup identical handshake middleware as backend/server.js
-  const handshakeMiddleware = (socket, next) => {
-    const token = socket.handshake.auth?.token;
-    if (!token) return next(new Error("Unauthorized"));
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      socket.user = decoded;
-      socket.data.user = decoded; // Critical for Redis RemoteSocket serialization
-      next();
-    } catch (e) {
-      next(new Error("Invalid token"));
-    }
-  };
-
-  ioA.use(handshakeMiddleware);
-  ioB.use(handshakeMiddleware);
-
-  ioA.on("connection", (socket) => {
-    socket.on("joinWorkspace", (wsId) => socket.join(`workspace:${wsId}`));
+  // 5. Seed Real Workspace and Users in Database
+  const owner = await User.create({
+    name: "Workspace Owner",
+    email: `owner_${Date.now()}@collabdesk.scale`,
+    password: "TestPassword123!",
   });
 
-  ioB.on("connection", (socket) => {
-    socket.on("joinWorkspace", (wsId) => socket.join(`workspace:${wsId}`));
+  const member = await User.create({
+    name: "Target Member",
+    email: `member_${Date.now()}@collabdesk.scale`,
+    password: "TestPassword123!",
   });
 
-  const portA = await new Promise((r) => httpServerA.listen(0, () => r(httpServerA.address().port)));
-  const portB = await new Promise((r) => httpServerB.listen(0, () => r(httpServerB.address().port)));
-
-  console.log(`- Instance A listening on port :${portA}`);
-  console.log(`- Instance B listening on port :${portB}`);
-
-  const testUserId = "6ad329d9fab22c1da29ac9c2";
-  const workspaceId = "ws_cluster_999";
-  const token = jwt.sign({ id: testUserId, name: "Cluster Tester" }, JWT_SECRET);
-
-  // 3. Connect Client Socket to Instance A
-  const clientA = ioClient(`http://localhost:${portA}`, {
-    auth: { token },
-    transports: ["websocket"],
+  const workspace = await Workspace.create({
+    name: "Cluster Scale Board",
+    owner: owner._id,
+    members: [owner._id, member._id],
   });
 
-  await new Promise((resolve, reject) => {
-    clientA.on("connect", resolve);
-    clientA.on("connect_error", reject);
+  const list = await List.create({
+    name: "In Progress",
+    workspace: workspace._id,
+    position: 0,
   });
-  console.log(`✔ Client connected to Instance A (Socket ID: ${clientA.id})`);
 
-  // Client A joins workspace room on Instance A
-  clientA.emit("joinWorkspace", workspaceId);
-  await new Promise((r) => setTimeout(r, 100));
+  const ownerToken = jwt.sign({ id: owner._id.toString() }, JWT_SECRET);
+  const memberToken = jwt.sign({ id: member._id.toString() }, JWT_SECRET);
 
-  if (redisAvailable) {
-    // 4. Test Cross-Instance Event Propagation: Instance B emits to room, Client A receives
-    let receivedEventOnA = null;
-    clientA.on("taskCreated", (data) => {
-      receivedEventOnA = data;
+  console.log(`✔ Seeded workspace "${workspace.name}" with Owner and Member.\n`);
+
+  let clientOnInstanceA;
+  try {
+    // 6. Connect Member's Socket to Instance A
+    clientOnInstanceA = ioClient(`http://localhost:${portA}`, {
+      auth: { token: memberToken },
+      transports: ["websocket"],
     });
 
-    ioB.to(`workspace:${workspaceId}`).emit("taskCreated", {
-      taskId: "task_cross_node_1",
-      title: "Cross-Instance Synced Task",
+    await new Promise((resolve, reject) => {
+      clientOnInstanceA.on("connect", resolve);
+      clientOnInstanceA.on("connect_error", reject);
     });
 
-    await new Promise((r) => setTimeout(r, 200));
-    assert.ok(receivedEventOnA, "Client on Instance A must receive event broadcasted from Instance B");
-    assert.strictEqual(receivedEventOnA.title, "Cross-Instance Synced Task");
-    console.log("✔ Cross-Instance Broadcast: Instance B -> Redis -> Instance A -> Client verified");
+    clientOnInstanceA.emit("joinWorkspace", workspace._id.toString());
+    await new Promise((r) => setTimeout(r, 100));
+    console.log("✔ Member socket joined workspace room on Instance A.");
 
-    // 5. Test Cross-Instance RemoteSocket Eviction
-    const remoteSockets = await ioB.in(`workspace:${workspaceId}`).fetchSockets();
-    assert.strictEqual(remoteSockets.length, 1, "Instance B should locate RemoteSocket on Instance A");
+    // 7. Verify Cross-Node Broadcast: Instance B emits mutation, Client on Instance A receives
+    let receivedMutationOnA = null;
+    clientOnInstanceA.on("taskCreated", (data) => {
+      receivedMutationOnA = data;
+    });
 
-    const remote = remoteSockets[0];
-    assert.ok(
-      remote.data?.user?.id === testUserId,
-      "RemoteSocket.data.user must retain serialized user data across instances"
-    );
-    console.log("✔ RemoteSocket Serialization: remote.data.user.id verified across cluster nodes");
+    instanceB.io.to(`workspace:${workspace._id}`).emit("taskCreated", {
+      title: "Cluster Event From Instance B",
+    });
 
-    // Evict user from room via Instance B
-    for (const s of remoteSockets) {
-      const uid = s.data?.user?.id || s.user?.id;
-      if (uid === testUserId) {
-        s.leave(`workspace:${workspaceId}`);
-      }
-    }
     await new Promise((r) => setTimeout(r, 150));
+    assert.ok(receivedMutationOnA, "Client on Instance A must receive event broadcasted from Instance B");
+    assert.strictEqual(receivedMutationOnA.title, "Cluster Event From Instance B");
+    console.log("✔ Cross-Instance Broadcast verified: Instance B -> Redis -> Instance A -> Client Socket.");
 
-    // Verify eviction: emit second event from Instance B, Client on Instance A must NOT receive it
-    let receivedAfterEvict = false;
-    clientA.on("taskDeleted", () => {
-      receivedAfterEvict = true;
+    // 8. Warm Instance A's In-Memory Membership Cache
+    const preEvictReadRes = await request(instanceA.app)
+      .get(`/api/tasks/workspace/${workspace._id}`)
+      .set("Authorization", `Bearer ${memberToken}`);
+    assert.strictEqual(preEvictReadRes.status, 200);
+    console.log("✔ Instance A in-memory membership cache warmed (status 200).");
+
+    // 9. Execute Real Member Eviction via REST on Instance B
+    let evictionNoticeReceived = false;
+    clientOnInstanceA.on("error", (err) => {
+      if (err.message?.includes("Access revoked")) evictionNoticeReceived = true;
     });
 
-    ioB.to(`workspace:${workspaceId}`).emit("taskDeleted", { taskId: "task_cross_node_1" });
+    const removeRes = await request(instanceB.app)
+      .delete(`/api/workspaces/${workspace._id}/members/${member._id}`)
+      .set("Authorization", `Bearer ${ownerToken}`);
+
+    assert.strictEqual(removeRes.status, 200);
+    console.log("✔ Member removed via REST DELETE on Instance B.");
+
+    // Wait for Redis cluster eviction cycle
     await new Promise((r) => setTimeout(r, 200));
 
-    assert.strictEqual(receivedAfterEvict, false, "Evicted socket must NOT receive subsequent room events");
-    console.log("✔ Cross-Instance Eviction: Remote socket revoked from room across cluster nodes");
-  } else {
-    // In-memory verification of socket.data.user assignment
-    const sockets = await ioA.in(`workspace:${workspaceId}`).fetchSockets();
-    assert.strictEqual(sockets.length, 1);
-    assert.strictEqual(sockets[0].data.user.id, testUserId);
-    console.log("✔ Verified socket.data.user contract matches Redis cluster requirements");
-  }
+    // Verify RemoteSocket eviction
+    assert.strictEqual(evictionNoticeReceived, true, "Socket on Instance A should receive access revoked notice");
+    console.log("✔ RemoteSocket eviction verified: Instance B evicted socket hosted on Instance A.");
 
-  // Cleanup
-  clientA.disconnect();
-  httpServerA.close();
-  httpServerB.close();
+    // 10. Verify Cross-Node Immediate Cache Invalidation
+    // Instance B published to 'collabdesk:cache:invalidate' -> Instance A's memberCache is purged immediately!
+    const postEvictReadRes = await request(instanceA.app)
+      .get(`/api/tasks/workspace/${workspace._id}`)
+      .set("Authorization", `Bearer ${memberToken}`);
 
-  if (redisAvailable) {
-    await Promise.all([
-      pubClientA.disconnect(),
-      subClientA.disconnect(),
-      pubClientB.disconnect(),
-      subClientB.disconnect(),
-    ]);
+    assert.strictEqual(
+      postEvictReadRes.status,
+      403,
+      "Instance A must immediately reject removed member with 403 Forbidden via Redis cache bus"
+    );
+    console.log("✔ Cross-Instance Cache Invalidation verified: Instance A rejected removed member with 403.");
+
+  } finally {
+    if (clientOnInstanceA) clientOnInstanceA.disconnect();
+    instanceA.server.close();
+    instanceB.server.close();
+
+    await Task.deleteMany({ workspace: workspace._id });
+    await List.deleteMany({ workspace: workspace._id });
+    await Workspace.findByIdAndDelete(workspace._id);
+    await User.findByIdAndDelete(owner._id);
+    await User.findByIdAndDelete(member._id);
+
+    await Promise.all([pubA.disconnect(), subA.disconnect(), pubB.disconnect(), subB.disconnect()]);
+    await mongoose.disconnect();
   }
 
   console.log("\n============================================================");
-  console.log("ALL CROSS-INSTANCE HORIZONTAL SCALING CHECKS PASSED ✔");
+  console.log("ALL REAL MULTI-INSTANCE APPLICATION CHECKS PASSED (100% OK) ✔");
   console.log("============================================================\n");
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error("Test failed with error:", err);
+runClusterVerification().catch((err) => {
+  console.error("Cluster verification failed:", err);
   process.exit(1);
 });

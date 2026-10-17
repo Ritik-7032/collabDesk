@@ -13,10 +13,6 @@ export const getSocket = () => {
         : "http://13.203.210.175:5000");
     socket = io(socketUrl, {
       autoConnect: false,
-      auth: (cb) => {
-        const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
-        cb({ token });
-      },
       withCredentials: true,
       transports: ["websocket", "polling"],
     });

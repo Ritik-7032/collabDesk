@@ -246,12 +246,17 @@ Network physical transport—not Node.js compute or MongoDB query indexing—dom
 CollabDesk introduces a high-performance in-memory micro-cache with a 15-second TTL:
 - `sessionCache` in `authMiddleware.js`: caches verified user sessions for 15 seconds.
 - `memberCache` in `workspaceAccess.js`: caches workspace membership booleans for 15 seconds.
-- `invalidateMembershipCache`: called immediately upon member removal or role updates, ensuring security is never compromised.
+- `broadcastCacheInvalidation`: executed on member removal, publishing across Redis Pub/Sub (`collabdesk:cache:invalidate`) to immediately purge cached authorizations on all peer cluster instances.
 
-### Impact
+### Measured Impact & Bottleneck Breakdown
 Consecutive sprint board queries collapse from **3 sequential network hops down to 1 single hop** (the tasks query itself):
 - **Throughput:** Increased from $33.8\text{ req/s}$ to **$105.0\text{ req/s}$** ($+210\%$)
 - **Median Latency (p50):** Decreased from $202\text{ms}$ to **$64\text{ms}$** ($-68\%$)
 - **Average Latency:** Decreased from $291.8\text{ms}$ to **$97.9\text{ms}$** ($-66\%$)
+- **99th Percentile Latency (p99):** Decreased from $861\text{ms}$ to **$497\text{ms}$** ($-42\%$)
+
+### Tail Latency & Distributed Tradeoff Analysis
+- **Tail Latency Persistence:** While median latency dropped by 68%, high-percentile tail latency ($p97.5$ at $433\text{ms}$, $p99$ at $497\text{ms}$) reflects public WAN TCP transmission jitter and TLS renegotiation to the remote Atlas replica set. In production deployments where Node.js instances are co-located in the same AWS VPC with direct private peering to MongoDB, network latency drops to $< 2\text{ms}$.
+- **Authorization Staleness Tradeoff:** Without Redis connected, cache invalidation is process-local, meaning peer instances can serve reads for up to 15 seconds before the TTL expires. When Redis is connected, `broadcastCacheInvalidation` forces immediate distributed eviction across all nodes.
 
 

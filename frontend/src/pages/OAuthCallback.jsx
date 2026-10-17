@@ -24,12 +24,6 @@ export default function OAuthCallback() {
       return;
     }
 
-    if (!token) {
-      navigate("/login", { replace: true });
-      return;
-    }
-
-    localStorage.setItem("token", token);
     refreshUser().then((user) => {
       if (user) {
         toast.success(`Welcome back, ${user.name}`);

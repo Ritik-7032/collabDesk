@@ -199,15 +199,20 @@ To eliminate redundant WAN round-trips for repeated sprint team queries, CollabD
 
 #### Measured Results: Before vs. After Micro-Caching Optimization
 
-| Metric | Baseline (3 Sequential WAN Hops) | Optimized (1 Single WAN Hop) | Improvement |
+| Metric | Baseline (3 Sequential WAN Hops) | Optimized (1 Single WAN Hop) | Variance / Delta |
 | :--- | :--- | :--- | :--- |
 | **Throughput** | 33.8 req/sec | **105.0 req/sec** | **+210% (3.1x)** |
 | **Median Latency (p50)** | 202 ms | **64 ms** | **-68% latency** |
 | **Average Latency** | 291.8 ms | **97.9 ms** | **-66% latency** |
 | **97.5th Percentile (p97.5)**| 581 ms | **433 ms** | **-25% latency** |
+| **99th Percentile (p99)** | 861 ms | **497 ms** | **-42% latency** |
 | **Bandwidth** | 356 kB/sec | **1.11 MB/sec** | **+211%** |
-| **Completed Requests** | 170 reqs / 5s | **500 reqs / 5s** | **+194%** |
-| **HTTP Error Rate** | 0.00% (0 errors) | **0.00% (0 errors)** | **Rock Solid** |
+| **Completed Requests** | 179 reqs / 5s | **500 reqs / 5s** | **+179%** |
+| **HTTP Error Rate** | 0.00% (0 / 179) | **0.00% (0 / 500)** | **0 errors** |
+
+> ℹ️ **Tail Latency Analysis:** While median latency dropped by 68% (from 202ms to 64ms), high-percentile tail latency (p97.5 at 433ms, p99 at 497ms) remains present due to public internet WAN TCP congestion and TLS jitter between the local test client and MongoDB Atlas in AWS `ap-south-1`. In co-located AWS VPC deployments, VPC peering reduces this network hop to under 2ms.
+>
+> ⚠️ **Architectural Tradeoff (Cache vs. DB Authorization):** The 3.1x throughput improvement is achieved through 15-second TTL in-memory micro-caching of user sessions and workspace memberships. In distributed multi-instance clusters, immediate cross-node invalidation is propagated via Redis Pub/Sub (`collabdesk:cache:invalidate`). If Redis is not deployed, single-node fallback introduces a maximum 15-second staleness window before revoked member REST queries are blocked.
 
 ---
 

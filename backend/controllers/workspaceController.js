@@ -2,7 +2,7 @@ const Workspace = require("../models/Workspace");
 const List = require("../models/List");
 const User = require("../models/User");
 const { sendSlackTest } = require("../utils/slackNotifier");
-const { invalidateMembershipCache } = require("../middleware/workspaceAccess");
+const { broadcastCacheInvalidation } = require("../middleware/workspaceAccess");
 
 const DEFAULT_LISTS = [
   { name: "To do", color: "teal" },
@@ -145,7 +145,7 @@ const removeMember = async (req, res) => {
       "name email"
     );
 
-    invalidateMembershipCache(workspace._id, req.params.memberId);
+    broadcastCacheInvalidation(req.app, workspace._id, req.params.memberId);
 
     const io = req.app.get("io");
     if (io) {
