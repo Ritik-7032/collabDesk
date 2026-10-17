@@ -88,5 +88,7 @@ const taskSchema = new mongoose.Schema(
 );
 
 taskSchema.index({ workspace: 1, list: 1, position: 1 });
+taskSchema.index({ workspace: 1, position: 1 });
+taskSchema.index({ list: 1, position: 1 });
 
 module.exports = mongoose.model("Task", taskSchema);

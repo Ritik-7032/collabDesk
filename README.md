@@ -217,11 +217,11 @@ collabDesk/
 ├── backend/
 │   ├── config/                # DB, Passport, Gemini, S3, Razorpay configurations
 │   ├── controllers/           # Business logic (auth, workspace, task, list, AI, upload, payment)
-│   ├── middleware/            # JWT auth, workspaceAccess tenant isolation & error handling
-│   ├── models/                # Mongoose schemas (User, Workspace, List, Task)
+│   ├── middleware/            # JWT auth, workspaceAccess, rateLimiter & requestMetrics
+│   ├── models/                # Mongoose schemas with compound B-Tree indexes
 │   ├── routes/                # Express REST API route definitions
 │   ├── utils/                 # Asynchronous Slack notification service
-│   ├── tests/                 # Supertest 12-suite integration test runner
+│   ├── tests/                 # Supertest 14-suite integration test runner
 │   ├── Dockerfile             # Production-grade Node.js 20 Alpine container
 │   ├── .env.example           # Documented environment template
 │   └── server.js              # Server entry point, JWT socket handshake & room authorization

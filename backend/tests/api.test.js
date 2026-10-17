@@ -261,5 +261,31 @@ describe("CollabDesk API & Integration Test Suite", () => {
     const User = require("../models/User");
     await User.findOneAndDelete({ email: userCEmail });
   });
+
+  test("13. Performance Metrics: Response includes high-resolution X-Response-Time header", async () => {
+    const res = await request(app).get("/");
+    assert.strictEqual(res.status, 200);
+    assert.ok(res.headers["x-response-time"]);
+    assert.ok(res.headers["x-response-time"].endsWith("ms"));
+    const msValue = parseFloat(res.headers["x-response-time"]);
+    assert.ok(!isNaN(msValue) && msValue >= 0);
+  });
+
+  test("14. Rate Limiting: Strict auth limiter returns HTTP 429 when threshold exceeded", async () => {
+    // Send 16 requests with x-test-rate-limit to trigger authLimiter (max 15)
+    let lastStatus = 200;
+    for (let i = 0; i < 16; i++) {
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("x-test-rate-limit", "true")
+        .send({ email: "rate_limit_probe@test.com", password: "wrong" });
+      lastStatus = res.status;
+      if (lastStatus === 429) {
+        assert.ok(res.body.message.includes("Too many"));
+        break;
+      }
+    }
+    assert.strictEqual(lastStatus, 429);
+  });
 });
 

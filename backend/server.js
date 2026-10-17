@@ -12,9 +12,19 @@ const listRoutes = require("./routes/listRoutes");
 const aiRoutes = require("./routes/aiRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const passport = require("./config/passport");
-const dbConnect = require("./config/db");
+const {
+  apiLimiter,
+  authLimiter,
+  aiLimiter,
+  uploadLimiter,
+} = require("./middleware/rateLimiter");
+const requestMetrics = require("./middleware/requestMetrics");
+
 const app = express();
 const server = http.createServer(app);
+
+// Enable trust proxy for correct client IP detection behind Vercel / reverse proxies
+app.set("trust proxy", 1);
 
 const allowedOrigins = [
   "http://localhost:5173",
@@ -41,16 +51,20 @@ const io = new Server(server, {
 });
 app.set("io", io);
 
+app.use(requestMetrics);
 app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(express.json());
 app.use(passport.initialize());
-app.use("/api/auth", authRoutes);
+
+// Rate limited API routing
+app.use("/api", apiLimiter);
+app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/workspaces", workspaceRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/lists", listRoutes);
-app.use("/api/upload", uploadRoutes);
+app.use("/api/upload", uploadLimiter, uploadRoutes);
 app.use("/api/payment", paymentRoutes);
-app.use("/api/ai", aiRoutes);
+app.use("/api/ai", aiLimiter, aiRoutes);
 
 app.get("/", (req, res) => {
   res.send("CollabDesk API Server is running!");
