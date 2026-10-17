@@ -25,8 +25,8 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const generatePresignedUrl = async (req, res) => {
   try {
     const { fileName, fileType, fileSize } = req.body;
-    if (!fileName || !fileType) {
-      return res.status(400).json({ message: "fileName and fileType are required" });
+    if (!fileName || !fileType || !fileSize) {
+      return res.status(400).json({ message: "fileName, fileType, and fileSize are required" });
     }
 
     const normalizedMime = fileType.toLowerCase().trim();
@@ -36,14 +36,12 @@ const generatePresignedUrl = async (req, res) => {
       });
     }
 
-    // Maximum 10MB file limit with strict integer validation
-    if (fileSize !== undefined && fileSize !== null) {
-      const parsedSize = Number(fileSize);
-      if (!Number.isInteger(parsedSize) || parsedSize <= 0 || parsedSize > MAX_FILE_SIZE) {
-        return res.status(400).json({
-          message: "Invalid fileSize: must be an integer between 1 byte and 10MB",
-        });
-      }
+    // Maximum 10MB file limit with mandatory integer validation
+    const parsedSize = Number(fileSize);
+    if (!Number.isInteger(parsedSize) || parsedSize <= 0 || parsedSize > MAX_FILE_SIZE) {
+      return res.status(400).json({
+        message: "Invalid fileSize: must be an integer between 1 byte and 10MB",
+      });
     }
 
     const sanitized = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");

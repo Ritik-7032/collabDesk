@@ -5,17 +5,26 @@ const mongoose = require("mongoose");
 require("dotenv").config();
 
 process.env.NODE_ENV = "test";
-const { app } = require("../server");
+const { app, server } = require("../server");
 const dbConnect = require("../config/db");
+const ioClient = require("socket.io-client");
 
 describe("CollabDesk API & Integration Test Suite", () => {
   let authToken = "";
   const testEmail = `test_${Date.now()}@collabdesk.test`;
   const testPassword = "StrongTestPassword123!";
   let createdWorkspaceId = "";
+  let testHttpServer;
+  let testPort;
 
   before(async () => {
     await dbConnect();
+    await new Promise((resolve) => {
+      testHttpServer = server.listen(0, () => {
+        testPort = testHttpServer.address().port;
+        resolve();
+      });
+    });
   });
 
   after(async () => {
@@ -34,6 +43,9 @@ describe("CollabDesk API & Integration Test Suite", () => {
           await Workspace.findByIdAndDelete(createdWorkspaceId);
         }
         await User.findByIdAndDelete(user._id);
+      }
+      if (testHttpServer) {
+        await new Promise((resolve) => testHttpServer.close(resolve));
       }
       await mongoose.disconnect();
     }
@@ -223,6 +235,16 @@ describe("CollabDesk API & Integration Test Suite", () => {
         fileSize: 20 * 1024 * 1024, // 20MB
       });
     assert.strictEqual(oversizeRes.status, 400);
+
+    // Missing mandatory fileSize
+    const missingSizeRes = await request(app)
+      .post("/api/upload/presign")
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        fileName: "doc.pdf",
+        fileType: "application/pdf",
+      });
+    assert.strictEqual(missingSizeRes.status, 400);
   });
 
   test("12. Atomic Batch Reorder: Unauthorized user cannot reorder tasks", async () => {
@@ -286,6 +308,134 @@ describe("CollabDesk API & Integration Test Suite", () => {
       }
     }
     assert.strictEqual(lastStatus, 429);
+  });
+
+  test("15. Optimistic Concurrency Control: Updating task with stale expectedVersion returns HTTP 409 Conflict", async () => {
+    const List = require("../models/List");
+    const lists = await List.find({ workspace: createdWorkspaceId });
+    assert.ok(lists.length > 0);
+    const targetList = lists[0];
+
+    // Create task with initial version 1
+    const createRes = await request(app)
+      .post("/api/tasks")
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        title: "OCC Baseline Task",
+        workspace: createdWorkspaceId,
+        list: targetList._id,
+      });
+    assert.strictEqual(createRes.status, 201);
+    const taskId = createRes.body._id;
+    assert.strictEqual(createRes.body.version, 1);
+
+    // Update with expectedVersion 1 (succeeds, bumps version to 2)
+    const validUpdateRes = await request(app)
+      .put(`/api/tasks/${taskId}`)
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        title: "OCC Task Version 2",
+        expectedVersion: 1,
+      });
+    assert.strictEqual(validUpdateRes.status, 200);
+    assert.strictEqual(validUpdateRes.body.version, 2);
+
+    // Concurrent user attempts update with stale expectedVersion 1 (fails with 409 Conflict)
+    const conflictRes = await request(app)
+      .put(`/api/tasks/${taskId}`)
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({
+        title: "Conflicting Concurrent Update",
+        expectedVersion: 1,
+      });
+    assert.strictEqual(conflictRes.status, 409);
+    assert.ok(conflictRes.body.message.includes("Conflict"));
+    assert.strictEqual(conflictRes.body.currentVersion, 2);
+  });
+
+  test("16. Real-Time Socket Isolation: Fail-closed room authorization and zero-leak event privacy", async () => {
+    // 1. Create outsider User B
+    const userBEmail = `userb_socket_${Date.now()}@collabdesk.test`;
+    await request(app)
+      .post("/api/auth/signup")
+      .send({
+        name: "Socket Intruder B",
+        email: userBEmail,
+        password: testPassword,
+      });
+    const loginBRes = await request(app)
+      .post("/api/auth/login")
+      .send({ email: userBEmail, password: testPassword });
+    const userBToken = loginBRes.body.token;
+
+    // 2. Connect Client A (member) and Client B (outsider)
+    const socketA = ioClient(`http://localhost:${testPort}`, {
+      auth: { token: authToken },
+      transports: ["websocket"],
+      forceNew: true,
+    });
+    const socketB = ioClient(`http://localhost:${testPort}`, {
+      auth: { token: userBToken },
+      transports: ["websocket"],
+      forceNew: true,
+    });
+
+    try {
+      await Promise.all([
+        new Promise((resolve) => socketA.on("connect", resolve)),
+        new Promise((resolve) => socketB.on("connect", resolve)),
+      ]);
+
+      // 3. User B attempts unauthorized room join -> rejected with error
+      const bErrorPromise = new Promise((resolve) => {
+        socketB.once("error", (err) => resolve(err));
+      });
+      socketB.emit("joinWorkspace", createdWorkspaceId);
+      const bError = await bErrorPromise;
+      assert.ok(
+        bError.message.includes("Unauthorized") ||
+        bError.message.includes("Access denied") ||
+        bError.message.includes("not a member")
+      );
+
+      // 4. User A joins valid room
+      socketA.emit("joinWorkspace", createdWorkspaceId);
+      await new Promise((r) => setTimeout(r, 60));
+
+      // 5. Track event delivery across sockets
+      let eventReceivedA = false;
+      let eventReceivedB = false;
+      socketA.on("taskCreated", () => {
+        eventReceivedA = true;
+      });
+      socketB.on("taskCreated", () => {
+        eventReceivedB = true;
+      });
+
+      // 6. Trigger workspace mutation via REST API
+      const List = require("../models/List");
+      const lists = await List.find({ workspace: createdWorkspaceId });
+      await request(app)
+        .post("/api/tasks")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({
+          title: "Confidential Workspace Event",
+          workspace: createdWorkspaceId,
+          list: lists[0]._id,
+        });
+
+      // Wait for real-time propagation cycle
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Member received event; outsider received zero events
+      assert.strictEqual(eventReceivedA, true);
+      assert.strictEqual(eventReceivedB, false);
+    } finally {
+      socketA.disconnect();
+      socketB.disconnect();
+      const User = require("../models/User");
+      await User.findOneAndDelete({ email: userBEmail });
+    }
   });
 });
 

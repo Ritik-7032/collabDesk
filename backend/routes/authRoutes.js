@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const passport = require("../config/passport");
 const { protect } = require("../middleware/authMiddleware");
+const { authLimiter } = require("../middleware/rateLimiter");
 const {
   signup,
   login,
@@ -11,11 +12,14 @@ const {
   resetPassword,
 } = require("../controllers/authController");
 
-router.post("/signup", signup);
-router.post("/login", login);
+// Sensitive endpoints protected by strict auth brute-force limiter
+router.post("/signup", authLimiter, signup);
+router.post("/login", authLimiter, login);
+router.post("/forgot-password", authLimiter, forgotPassword);
+router.post("/reset-password", authLimiter, resetPassword);
+
+// Informational and OAuth routes bypass authLimiter to avoid false 429 lockouts
 router.get("/me", protect, getMe);
-router.post("/forgot-password", forgotPassword);
-router.post("/reset-password", resetPassword);
 
 router.get(
   "/google",

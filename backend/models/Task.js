@@ -83,6 +83,10 @@ const taskSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    version: {
+      type: Number,
+      default: 1,
+    },
   },
   { timestamps: true }
 );

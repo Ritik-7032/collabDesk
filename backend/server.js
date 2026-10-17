@@ -21,6 +21,8 @@ const {
 } = require("./middleware/rateLimiter");
 const requestMetrics = require("./middleware/requestMetrics");
 
+const helmet = require("helmet");
+
 const app = express();
 const server = http.createServer(app);
 
@@ -52,6 +54,7 @@ const io = new Server(server, {
 });
 app.set("io", io);
 
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(requestMetrics);
 app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(express.json());
@@ -59,7 +62,7 @@ app.use(passport.initialize());
 
 // Rate limited API routing
 app.use("/api", apiLimiter);
-app.use("/api/auth", authLimiter, authRoutes);
+app.use("/api/auth", authRoutes);
 app.use("/api/workspaces", workspaceRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/lists", listRoutes);

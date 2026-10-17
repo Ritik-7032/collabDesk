@@ -28,6 +28,20 @@ const createTask = async (req, res) => {
       return res.status(400).json({ message: "Target list does not belong to this workspace" });
     }
 
+    // Verify assignedTo belongs to this workspace if provided
+    if (assignedTo) {
+      if (!mongoose.isValidObjectId(assignedTo)) {
+        return res.status(400).json({ message: "Invalid assignedTo user ID" });
+      }
+      const isAssigneeMember = await Workspace.exists({
+        _id: workspace,
+        members: assignedTo,
+      });
+      if (!isAssigneeMember) {
+        return res.status(400).json({ message: "Assigned user is not a member of this workspace" });
+      }
+    }
+
     const count = await Task.countDocuments({ list });
 
     const task = await Task.create({
@@ -100,6 +114,7 @@ const updateTask = async (req, res) => {
       labels,
       dueDate,
       checklist,
+      expectedVersion,
     } = req.body;
 
     const oldTask = await Task.findById(req.params.id);
@@ -107,11 +122,36 @@ const updateTask = async (req, res) => {
       return res.status(404).json({ message: "Task not found" });
     }
 
+    // Optimistic Concurrency Control (OCC)
+    if (expectedVersion !== undefined && expectedVersion !== null) {
+      if (Number(oldTask.version) !== Number(expectedVersion)) {
+        return res.status(409).json({
+          message: "Conflict: This task was modified by another user. Please refresh and review latest changes.",
+          currentVersion: oldTask.version,
+          expectedVersion: Number(expectedVersion),
+        });
+      }
+    }
+
     // Prevent cross-workspace list relocation
     if (list && list.toString() !== oldTask.list.toString()) {
       const targetList = await List.findById(list);
       if (!targetList || targetList.workspace.toString() !== oldTask.workspace.toString()) {
         return res.status(400).json({ message: "Target list does not belong to this workspace" });
+      }
+    }
+
+    // Verify assignedTo belongs to this workspace if updated
+    if (assignedTo !== undefined && assignedTo !== null && assignedTo !== "") {
+      if (!mongoose.isValidObjectId(assignedTo)) {
+        return res.status(400).json({ message: "Invalid assignedTo user ID" });
+      }
+      const isAssigneeMember = await Workspace.exists({
+        _id: oldTask.workspace,
+        members: assignedTo,
+      });
+      if (!isAssigneeMember) {
+        return res.status(400).json({ message: "Assigned user is not a member of this workspace" });
       }
     }
 
@@ -126,6 +166,7 @@ const updateTask = async (req, res) => {
     if (labels !== undefined) update.labels = labels;
     if (dueDate !== undefined) update.dueDate = dueDate;
     if (checklist !== undefined) update.checklist = checklist;
+    update.$inc = { version: 1 };
 
     const isListChanged = list && oldTask.list && list.toString() !== oldTask.list.toString();
     const task = await Task.findByIdAndUpdate(req.params.id, update, { new: true });
