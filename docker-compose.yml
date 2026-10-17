@@ -1,4 +1,5 @@
 services:
+  # Primary Backend Node
   backend:
     build:
       context: ./backend
@@ -11,3 +12,31 @@ services:
       - ./backend/.env
     environment:
       - PORT=5000
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  # Horizontal Scale Replica (Multi-Instance Clustering Demo)
+  backend-replica:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: collabdesk-backend-replica
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - PORT=5000
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  # Distributed Redis Pub/Sub Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: collabdesk-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"

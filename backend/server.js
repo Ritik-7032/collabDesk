@@ -54,6 +54,26 @@ const io = new Server(server, {
 });
 app.set("io", io);
 
+// Horizontal Scaling Layer: Redis Pub/Sub Adapter for Multi-Instance Socket.io
+if (process.env.REDIS_URL) {
+  const { createClient } = require("redis");
+  const { createAdapter } = require("@socket.io/redis-adapter");
+  const pubClient = createClient({ url: process.env.REDIS_URL });
+  const subClient = pubClient.duplicate();
+
+  pubClient.on("error", (err) => console.warn("Redis PubClient error:", err.message));
+  subClient.on("error", (err) => console.warn("Redis SubClient error:", err.message));
+
+  Promise.all([pubClient.connect(), subClient.connect()])
+    .then(() => {
+      io.adapter(createAdapter(pubClient, subClient));
+      console.log("Socket.io Redis adapter connected: Multi-instance cluster enabled.");
+    })
+    .catch((err) => {
+      console.warn("Failed to connect Redis adapter, falling back to in-memory:", err.message);
+    });
+}
+
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(requestMetrics);
 app.use(cors({ origin: corsOrigin, credentials: true }));

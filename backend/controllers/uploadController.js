@@ -3,12 +3,11 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const s3 = require("../config/s3");
 
 const ALLOWED_MIME_TYPES = new Set([
-  // Images
+  // Images (SVG omitted to prevent stored script injection / XSS)
   "image/jpeg",
   "image/png",
   "image/webp",
   "image/gif",
-  "image/svg+xml",
   // Documents
   "application/pdf",
   "text/plain",

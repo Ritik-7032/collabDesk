@@ -135,7 +135,11 @@ export default function TaskModal({
       };
 
       if (isEdit) {
-        const res = await api.put(`/tasks/${task._id}`, { ...payload, list: listId });
+        const res = await api.put(`/tasks/${task._id}`, {
+          ...payload,
+          list: listId,
+          expectedVersion: task.version,
+        });
         onUpdated(res.data);
         toast.success("Task updated");
       } else {
@@ -145,7 +149,11 @@ export default function TaskModal({
       }
       onClose();
     } catch (err) {
-      toast.error(getErrorMessage(err, "Couldn't save task"));
+      if (err.response?.status === 409) {
+        toast.error("Conflict: This task was updated by another teammate. Please reopen the card to see latest changes.");
+      } else {
+        toast.error(getErrorMessage(err, "Couldn't save task"));
+      }
     } finally {
       setSaving(false);
     }

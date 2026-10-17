@@ -231,6 +231,16 @@ const reorderTasksBulk = async (req, res) => {
       return res.status(403).json({ message: "Forbidden: You are not a member of this workspace" });
     }
 
+    // Verify all target lists belong to this workspace
+    const targetListIds = [...new Set(updates.map((u) => u.list))];
+    if (targetListIds.some((id) => !mongoose.isValidObjectId(id))) {
+      return res.status(400).json({ message: "Invalid target list ID in updates" });
+    }
+    const validLists = await List.find({ _id: { $in: targetListIds }, workspace: wsId }).select("_id");
+    if (validLists.length !== targetListIds.length) {
+      return res.status(400).json({ message: "One or more target lists do not belong to this workspace" });
+    }
+
     const bulkOps = updates.map((u) => ({
       updateOne: {
         filter: { _id: u._id, workspace: wsId },

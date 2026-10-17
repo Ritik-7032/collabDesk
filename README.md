@@ -180,24 +180,40 @@ npm run build
 
 ## 📊 Performance Benchmarks & Load Testing
 
-CollabDesk includes automated load testing suites using **Autocannon** and **k6** to measure sustained throughput and latency under concurrent loads.
+CollabDesk includes an automated load testing harness using **Autocannon** and **k6** to measure throughput and latency distributions across two distinct workloads.
 
-### Real Measured Benchmark Results (50 Concurrent Connections):
+### Scenario A: Authenticated Database Read (`GET /api/tasks/workspace/:id`)
+* **Workload:** 10 concurrent connections (simulating active sprint team) reading 20 populated task documents over MongoDB Atlas with JWT verification and B-Tree index scan (`{ workspace: 1, position: 1 }`).
+* **Tool:** Autocannon (5s sustained run)
 
-| Metric | Measured Value | Production Target | Status |
-| :--- | :--- | :--- | :---: |
-| **Throughput** | **~9,280 requests/sec** | > 1,000 req/sec | ⚡ Exceeded |
-| **Average Latency** | **4.92 ms** | < 50 ms | ⚡ Ultra-fast |
-| **50th Percentile (p50)** | **4.0 ms** | < 20 ms | ⚡ Optimal |
-| **97.5th Percentile (p97.5)** | **11.0 ms** | < 50 ms | ⚡ Sub-15ms |
-| **99th Percentile (p99)** | **16.0 ms** | < 100 ms | ⚡ Sub-20ms |
-| **Error Rate** | **0.00% (0 errors)** | < 0.1% | 🛡️ Flawless |
+| Metric | Measured Value | Unit |
+| :--- | :--- | :--- |
+| **Throughput** | 33.8 | requests / second |
+| **Bandwidth** | 356 | kB / second |
+| **Median Latency (p50)** | 202 | ms |
+| **97.5th Percentile (p97.5)** | 581 | ms |
+| **99th Percentile (p99)** | 861 | ms |
+| **Average Latency** | 291.8 | ms |
+| **HTTP Error Rate** | 0.00% (0 errors / 179 total requests) | % |
+
+### Scenario B: Gateway & Security Pipeline (`GET /`)
+* **Workload:** 50 concurrent connections testing Express middleware chain (Helmet headers, CORS validation, nanosecond latency calculation via `process.hrtime.bigint`).
+
+| Metric | Measured Value | Unit |
+| :--- | :--- | :--- |
+| **Throughput** | 9,282 | requests / second |
+| **Bandwidth** | 9.1 | MB / second |
+| **Median Latency (p50)** | 4.0 | ms |
+| **97.5th Percentile (p97.5)** | 11.0 | ms |
+| **99th Percentile (p99)** | 16.0 | ms |
+| **Average Latency** | 4.92 | ms |
+| **HTTP Error Rate** | 0.00% (0 errors / 46,000 total requests) | % |
 
 ```bash
-# Run automated benchmark locally:
+# Reproduce the authenticated database benchmark locally:
 cd backend && npm run benchmark
 
-# Or run k6 virtual user simulation:
+# Or run k6 scenario:
 k6 run tests/k6-load-test.js
 ```
 
