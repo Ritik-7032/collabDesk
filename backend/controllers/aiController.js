@@ -11,12 +11,11 @@ const generateSubtasks = async (req, res) => {
     let subtasks = [];
     let isFallback = false;
 
-    // Attempt generation via verified active Google Gemini 3.8 Flash model (bypassed in test environment for hermetic execution)
+    // Attempt generation via verified active Google Gemini 3.8 Flash model
     if (
       process.env.GEMINI_API_KEY &&
       process.env.GEMINI_API_KEY !== "mock_key" &&
-      process.env.GEMINI_API_KEY !== "dummy_gemini_test_key" &&
-      process.env.NODE_ENV !== "test"
+      process.env.GEMINI_API_KEY !== "dummy_gemini_test_key"
     ) {
       try {
         const modelName = process.env.GEMINI_MODEL || "gemini-3.8-flash";

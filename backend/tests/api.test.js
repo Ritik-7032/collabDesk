@@ -142,17 +142,54 @@ describe("CollabDesk API & Integration Test Suite", () => {
     assert.ok(signedHeaders.includes("content-length"), "content-length must be bound in X-Amz-SignedHeaders");
   });
 
-  test("8. AI: Task breakdown endpoint returns valid checklist schema (with resilient fallback)", async () => {
-    const res = await request(app)
-      .post("/api/ai/generate-subtasks")
-      .set("Authorization", `Bearer ${authToken}`)
-      .send({
-        description: "Set up MongoDB compound indexes and Redis caching layer",
-      });
+  test("8. AI: Task breakdown endpoint returns valid checklist schema (mocked AI response and resilient fallback)", async (t) => {
+    const genAI = require("../config/gemini");
+    const originalKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "active_test_key_for_mock";
 
-    assert.strictEqual(res.status, 200);
-    assert.ok(Array.isArray(res.body.subtasks));
-    assert.ok(res.body.subtasks.length >= 2);
+    try {
+      // 1. Test successful Gemini generation path (isFallback: false)
+      const mockModel = {
+        generateContent: async () => ({
+          response: {
+            text: () => JSON.stringify(["Mock Subtask A", "Mock Subtask B", "Mock Subtask C"]),
+          },
+        }),
+      };
+      t.mock.method(genAI, "getGenerativeModel", () => mockModel);
+
+      const successRes = await request(app)
+        .post("/api/ai/generate-subtasks")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({
+          description: "Set up MongoDB compound indexes and Redis caching layer",
+        });
+
+      assert.strictEqual(successRes.status, 200);
+      assert.strictEqual(successRes.body.isFallback, false);
+      assert.deepStrictEqual(successRes.body.subtasks, ["Mock Subtask A", "Mock Subtask B", "Mock Subtask C"]);
+
+      // 2. Test resilient fallback path on upstream API failure (isFallback: true)
+      t.mock.method(genAI, "getGenerativeModel", () => ({
+        generateContent: async () => {
+          throw new Error("503 Service Unavailable: Rate limit exceeded");
+        },
+      }));
+
+      const fallbackRes = await request(app)
+        .post("/api/ai/generate-subtasks")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({
+          description: "Set up MongoDB compound indexes and Redis caching layer",
+        });
+
+      assert.strictEqual(fallbackRes.status, 200);
+      assert.strictEqual(fallbackRes.body.isFallback, true);
+      assert.ok(Array.isArray(fallbackRes.body.subtasks));
+      assert.ok(fallbackRes.body.subtasks.length >= 2);
+    } finally {
+      process.env.GEMINI_API_KEY = originalKey;
+    }
   });
 
   test("9. Auth: Forgot and Reset Password token lifecycle (zero-leak & anti-enumeration)", async () => {
